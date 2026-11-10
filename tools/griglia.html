@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nomen — griglia di collaudo</title>
+<style>
+  html, body { margin: 0; background: #000; }
+  #foglio { display: block; width: 100%; height: auto; }
+  /* la tela vera resta fuori vista: si copia nel foglio un pianeta alla volta */
+  #tela { position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="tela"></canvas>
+<canvas id="foglio"></canvas>
+<script type="module">
+// Pagina di servizio, non fa parte del sito: disegna più pianeti fermi in una griglia,
+// per guardarli insieme, confrontare due varianti e salvare le immagini dei documenti.
+//
+//   tools/griglia.html#Gaia,Nettuno,Marte          i nomi nell'indirizzo
+//   griglia(['Gaia', { nome: 'Marte', giro: 2 }])  dalla console, con le opzioni
+//   salva('pianeti')                               manda il foglio a tools/serve.py → docs/img/pianeti.png
+import { pianeta, descrivi } from '../js/nome.js';
+import { creaMotore } from '../js/motore.js';
+
+const tela = document.getElementById('tela');
+const foglio = document.getElementById('foglio');
+const motore = creaMotore(tela);
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+/**
+ * celle: nomi, oppure oggetti { nome, giro, alzo, zoom, tempo, qualita, ritocca(p) }.
+ * opzioni: gli stessi valori per tutte le celle, più colonne, lato (pixel veri), forma (alto/largo), etichette.
+ */
+function griglia(celle, o = {}) {
+  const colonne = o.colonne ?? 2;
+  const lato = o.lato ?? Math.floor((window.innerWidth * dpr) / colonne);
+  const alto = Math.round(lato * (o.forma ?? 1));
+  tela.style.width = `${lato / dpr}px`;
+  tela.style.height = `${alto / dpr}px`;
+  foglio.width = colonne * lato;
+  foglio.height = Math.ceil(celle.length / colonne) * alto;
+  const ctx = foglio.getContext('2d');
+  ctx.font = `${Math.round(lato / 30)}px system-ui, sans-serif`;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+
+  celle.forEach((cella, i) => {
+    const c = typeof cella === 'string' ? { nome: cella } : cella;
+    const p = pianeta(c.nome);
+    c.ritocca?.(p); // per provare una variante senza toccare il codice
+    motore.mostra(p);
+    motore.imposta({
+      subito: true,
+      fermo: true,
+      scala: 1,
+      qualita: c.qualita ?? o.qualita ?? 2,
+      tempo: c.tempo ?? o.tempo ?? 20,
+      giro: c.giro ?? o.giro ?? 0,
+      alzo: c.alzo ?? o.alzo ?? 0.22,
+      zoom: c.zoom ?? o.zoom ?? 1,
+    });
+    motore.disegna();
+    const x = (i % colonne) * lato;
+    const y = Math.floor(i / colonne) * alto;
+    ctx.drawImage(tela, x, y, lato, alto); // subito: la tela non conserva il disegno
+    if (o.etichette !== false) ctx.fillText(`${c.etichetta ?? p.nome} — ${descrivi(p, 'it').riga}`, x + lato / 40, y + alto - lato / 40);
+  });
+  return `${celle.length} pianeti, celle da ${lato}×${alto}`;
+}
+
+function salva(nome) {
+  return new Promise((fatto) => {
+    foglio.toBlob(async (b) => fatto((await fetch(`/salva/${nome}.png`, { method: 'POST', body: b })).status), 'image/png');
+  });
+}
+
+Object.assign(window, { griglia, salva, motore, pianeta });
+const nomi = decodeURIComponent(location.hash.slice(1)).split(',').filter(Boolean);
+griglia(nomi.length ? nomi : ['Gaia', 'Nettuno', 'Marte', 'Ermes', 'Zeus', 'Giove']);
+</script>
+</body>
+</html>

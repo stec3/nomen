@@ -1,0 +1,12 @@
+{
+  "name": "nomen",
+  "version": "0.1.0",
+  "description": "A planet for every name. Pure WebGL2, no libraries, no images.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "start": "python3 tools/serve.py",
+    "test": "node --test"
+  }
+}

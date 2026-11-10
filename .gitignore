@@ -1,0 +1,8 @@
+# Contesto locale di Claude (configurazione dell'anteprima, diario di sessione)
+.claude/
+
+# macOS
+.DS_Store
+
+# Node (il progetto non ha dipendenze: questa riga è solo una cintura di sicurezza)
+node_modules/
