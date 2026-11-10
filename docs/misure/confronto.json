@@ -1,0 +1,27 @@
+{
+  "cosa": "quota del terreno di base: shader (tools/confronto.html) contro js/terreno.js, mappa 256 × 128 per nome",
+  "data": "2026-11-10",
+  "scheda": "WebKit WebGL",
+  "punti": 32768,
+  "soglia": 0.002,
+  "scartoMassimo": 3.36e-05,
+  "superato": true,
+  "nomi": [
+    {"nome": "Atena", "tipo": "oceanico", "scartoMassimo": 2.39e-05, "scartoMedio": 2.38e-06, "costaDiscorde": 0},
+    {"nome": "Zeus", "tipo": "lavico", "scartoMassimo": 2.14e-05, "scartoMedio": 1.97e-06, "costaDiscorde": 0},
+    {"nome": "Gaia", "tipo": "terrestre", "scartoMassimo": 2.71e-05, "scartoMedio": 2.42e-06, "costaDiscorde": 0},
+    {"nome": "Nettuno", "tipo": "oceanico", "scartoMassimo": 1.94e-05, "scartoMedio": 2.17e-06, "costaDiscorde": 0},
+    {"nome": "Marte", "tipo": "desertico", "scartoMassimo": 2.88e-05, "scartoMedio": 2.77e-06, "costaDiscorde": 0},
+    {"nome": "Ermes", "tipo": "ghiacciato", "scartoMassimo": 2.41e-05, "scartoMedio": 2.25e-06, "costaDiscorde": 0},
+    {"nome": "Giove", "tipo": "gassoso", "scartoMassimo": 2.48e-05, "scartoMedio": 2.75e-06, "costaDiscorde": 0},
+    {"nome": "Iside", "tipo": "terrestre", "scartoMassimo": 3.36e-05, "scartoMedio": 2.46e-06, "costaDiscorde": 1},
+    {"nome": "Orfeo", "tipo": "terrestre", "scartoMassimo": 2.25e-05, "scartoMedio": 2.5e-06, "costaDiscorde": 0},
+    {"nome": "Aurora", "tipo": "desertico", "scartoMassimo": 2.3e-05, "scartoMedio": 2.02e-06, "costaDiscorde": 0},
+    {"nome": "Freya", "tipo": "ghiacciato", "scartoMassimo": 2.35e-05, "scartoMedio": 2.04e-06, "costaDiscorde": 0},
+    {"nome": "Odino", "tipo": "oceanico", "scartoMassimo": 2.49e-05, "scartoMedio": 2.31e-06, "costaDiscorde": 0},
+    {"nome": "Elena", "tipo": "terrestre", "scartoMassimo": 1.8e-05, "scartoMedio": 2.22e-06, "costaDiscorde": 0},
+    {"nome": "Viracocha", "tipo": "desertico", "scartoMassimo": 2.26e-05, "scartoMedio": 2.57e-06, "costaDiscorde": 0},
+    {"nome": "Proteo", "tipo": "terrestre", "scartoMassimo": 1.93e-05, "scartoMedio": 1.69e-06, "costaDiscorde": 0},
+    {"nome": "Polluce", "tipo": "terrestre", "scartoMassimo": 1.5e-05, "scartoMedio": 1.85e-06, "costaDiscorde": 0}
+  ]
+}

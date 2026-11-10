@@ -31,6 +31,26 @@ html, body {
 }
 #tela:active { cursor: grabbing; }
 
+/* i nomi delle città, sopra la tela e mai toccabili */
+#etichette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.etichetta {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font: 600 12px/1.2 system-ui, sans-serif;
+  letter-spacing: 0.02em;
+  color: rgba(244, 240, 230, 0.92);
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.9), 0 1px 2px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+}
+.etichetta.capitale { color: #ffe3a3; font-weight: 700; }
+.etichetta.capitale::before { content: '◆ '; font-size: 9px; vertical-align: 1px; }
+
 .marchio {
   position: fixed;
   top: max(18px, env(safe-area-inset-top));

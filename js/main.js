@@ -2,6 +2,7 @@
 import { pianeta, descrivi, ripulisci } from './nome.js';
 import { nomeACaso } from './nomi.js';
 import { creaMotore } from './motore.js';
+import { creaEtichette } from './etichette.js';
 
 const italiano = (navigator.language || 'en').toLowerCase().startsWith('it');
 const lingua = italiano ? 'it' : 'en';
@@ -205,6 +206,7 @@ if (!motore) {
       /* senza permesso di copiare non succede niente: l'indirizzo resta nella barra */
     }
   });
+  motore.ogniFotogramma(creaEtichette($('etichette'), motore));
   mostra(nomeNellIndirizzo());
   // per i collaudi e per chi vuole curiosare dalla console
   window.nomen = { motore, pianeta, descrivi, mostra };

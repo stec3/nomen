@@ -1,10 +1,11 @@
 // motore.js — WebGL2: compila lo shader, tiene la camera e disegna i fotogrammi.
 import { VERTICI, SPAZIO } from './glsl.js';
 import { SOLE, CAMERA } from './nome.js';
+import { costruisci } from './civilta.js';
 
 const TAN_FOV = 0.25; // tangente di mezzo campo visivo: un teleobiettivo, il pianeta resta tondo
 const QUOTA_MIN = 0.006; // la camera più bassa, in raggi: sotto servono coordinate relative alla camera
-const INTERI = new Set(['uTipo', 'uLiquido', 'uLune', 'uQual']);
+const INTERI = new Set(['uTipo', 'uLiquido', 'uLune', 'uQual', 'uCivIndice', 'uCivDati']);
 const FORME = { uSemeI: 'i3', uCol: '3', uLunaCol: '3', uLuna: '4', uTempesta: '4', uCiclone: '4', uCam: 'm', uRot: 'm', uRotNubi: 'm', uCielo: 'm' };
 
 const vett = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -78,7 +79,7 @@ export function uniformi(p) {
     uNubiScala: p.nubi.scala,
     uNubiVort: p.nubi.vortice,
     uCiclone: cicloni,
-    uCitta: p.civilta ? p.civilta.livello : 0, // fino alla fase 2b la civiltà si vede con le luci di città, tante quanto il livello
+    uCiv: p.civilta ? p.civilta.livello : 0, // città, strade e campi vengono dalle tabelle di civilta.js
     uAurora: p.tratti.includes('aurora') ? 1 : 0,
     uMariLuce: p.tratti.includes('mariLuce') ? 1 : 0,
     uEsagono: p.tratti.includes('esagono') ? 1 : 0,
@@ -139,6 +140,26 @@ export function creaMotore(tela) {
     else gl.uniform2fv(p, v);
   }
 
+  // La civiltà: due tabelle a 32 bit lette con texelFetch, senza filtro. Senza civiltà, una casella vuota.
+  const tabelle = [0, 1].map((i) => {
+    const t = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + i);
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    for (const k of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, k, gl.NEAREST);
+    for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, k, gl.CLAMP_TO_EDGE);
+    return t;
+  });
+  function carica(i, tab) {
+    gl.activeTexture(gl.TEXTURE0 + i);
+    gl.bindTexture(gl.TEXTURE_2D, tabelle[i]);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, tab.larghezza, tab.altezza, 0, gl.RGBA, gl.FLOAT, tab.dati);
+  }
+  const VUOTA = { larghezza: 1, altezza: 1, dati: new Float32Array(4) };
+  carica(0, VUOTA);
+  carica(1, VUOTA);
+  manda('uCivIndice', 0);
+  manda('uCivDati', 1);
+
   // --- stato -----------------------------------------------------------------
   // quota: altezza sul suolo in raggi; aggancio: quanto la camera ha girato insieme al pianeta
   const cam = { giro: CAMERA.giro, alzo: CAMERA.alzo, quota: 5.9, dist: 7, vGiro: 0, vAlzo: 0, aggancio: 0 };
@@ -155,10 +176,18 @@ export function creaMotore(tela) {
   let mediaMs = 16;
   let ultimo = 0;
   let basi = null; // gli assi del pianeta nello spazio
+  let civ = null; // la civiltà costruita del pianeta mostrato
+  let civPronta = 1; // la sua dissolvenza
+  let dopo = null; // chi vuole sapere che un fotogramma è stato disegnato (le etichette)
 
   function prepara(p) {
     pianeta = p;
     for (const [nome, v] of Object.entries(uniformi(p))) manda(nome, v);
+    // si costruisce adesso, nel buio della dissolvenza: a motore caldo un livello 4 sta sotto i 120 ms
+    civ = p.civilta ? costruisci(p) : null;
+    carica(0, civ ? civ.indice : VUOTA);
+    carica(1, civ ? civ.dati : VUOTA);
+    civPronta = 0;
     const a = p.asse;
     const e1 = unita(vett(Math.abs(a[1]) < 0.99 ? [0, 1, 0] : [1, 0, 0], a));
     basi = { a, e1, e3: vett(e1, a) };
@@ -286,6 +315,7 @@ export function creaMotore(tela) {
     manda('uRot', giro(angolo));
     manda('uRotNubi', giro(angolo + pianeta.nubi.vento * tempo));
     manda('uLuna', lune);
+    manda('uCivPronta', civPronta * civPronta * (3 - 2 * civPronta));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
@@ -324,6 +354,7 @@ export function creaMotore(tela) {
       // da vicino la camera gira insieme al pianeta: il suolo sotto resta fermo e si vede arrivare la sera
       if (pianeta) cam.aggancio += (1 - liscio(0.3, 2.0, cam.quota)) * ((2 * Math.PI) / pianeta.giorno) * dt;
     }
+    if (!prossimo && velo > 0.3) civPronta = Math.min(1, civPronta + dt / 0.8);
 
     // dissolvenza: via il pianeta vecchio, dentro il nuovo
     if (prossimo) {
@@ -346,6 +377,25 @@ export function creaMotore(tela) {
 
     if (!saltato && !fermo) adatta(dt);
     disegna();
+    if (dopo) dopo();
+  }
+
+  // Dove cade sullo schermo un punto del pianeta (coordinate del pianeta, raggio 1): x e y in pixel CSS e
+  // px, quanto è largo un pixel sul suolo lì. null se il punto sta dietro il pianeta o fuori dalla tela.
+  function proietta(c) {
+    if (!pianeta) return null;
+    const v = vista();
+    const m = giro((tempo * Math.PI * 2) / pianeta.giorno);
+    const w = [m[0] * c[0] + m[1] * c[1] + m[2] * c[2], m[3] * c[0] + m[4] * c[1] + m[5] * c[2], m[6] * c[0] + m[7] * c[1] + m[8] * c[2]];
+    const d = somma(w, 1, v.dir, -v.dist);
+    if (punto(w, d) >= 0) return null;
+    const zc = punto(d, v.avanti);
+    if (zc <= 0) return null;
+    const [l, h] = [tela.clientWidth, tela.clientHeight];
+    const x = ((punto(d, v.destra) / zc / TAN_FOV + v.centro[0]) * h + l) / 2;
+    const y = (h - (punto(d, v.alto) / zc / TAN_FOV + v.centro[1]) * h) / 2;
+    if (x < 0 || y < 0 || x > l || y > h) return null;
+    return { x, y, px: (2 * TAN_FOV * zc) / h };
   }
 
   // --- dita e mouse ------------------------------------------------------------
@@ -413,7 +463,7 @@ export function creaMotore(tela) {
         prepara(prossimo);
         prossimo = null;
       }
-      if (o.subito) velo = 1;
+      if (o.subito) velo = civPronta = 1;
       if (o.fermo !== undefined) fermo = o.fermo;
       if (o.tempo !== undefined) tempo = o.tempo;
       if (o.qualita !== undefined) qualita = o.qualita;
@@ -443,5 +493,12 @@ export function creaMotore(tela) {
     disegna,
     /** Il punto del suolo (nello spazio, raggio 1) sotto un pixel della tela, o null: per collaudi ed etichette. */
     suoloSotto,
+    proietta,
+    /** La civiltà costruita del pianeta mostrato (città, strade, tabelle, misure), o null. */
+    civilta: () => civ,
+    /** Una funzione da chiamare dopo ogni fotogramma disegnato. */
+    ogniFotogramma(f) {
+      dopo = f;
+    },
   };
 }

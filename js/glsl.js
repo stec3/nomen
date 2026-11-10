@@ -8,7 +8,7 @@ void main() {
   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }`;
 
-const INTESTAZIONE = `#version 300 es
+export const INTESTAZIONE = `#version 300 es
 precision highp float;
 precision highp int;
 
@@ -63,7 +63,10 @@ uniform float uNubiSoglia;
 uniform float uNubiScala;
 uniform float uNubiVort;
 uniform vec4 uCiclone[3]; // centro e raggio dei cicloni (raggio 0 = non c'è)
-uniform float uCitta;
+uniform float uCiv;          // livello della civiltà: 0 nessuna, da 1 (villaggi) a 5 (pianeta-città)
+uniform float uCivPronta;    // la civiltà entra in dissolvenza quando è costruita (0-1)
+uniform highp sampler2D uCivIndice; // per ogni cella: dove iniziano i suoi elementi e quanti sono
+uniform highp sampler2D uCivDati;   // città e tratti di strada, due caselle per elemento
 uniform float uAurora;
 uniform float uMariLuce;  // mari che brillano di notte (raro)
 uniform float uEsagono;   // esagono polare dei giganti gassosi (raro)
@@ -258,7 +261,7 @@ vec3 atmosfera(vec3 ro, vec3 rd, float ta, float tb, out vec3 tras) {
 // Anelli: un disco sottile di polvere. La luce riflessa e quella che lo
 // attraversa seguono le formule di uno strato sottile (Chandrasekhar).
 // ---------------------------------------------------------------------------
-const ANELLI = `
+export const ANELLI = `
 // Com'è fatto l'anello al raggio r: x = quanto è fitto, y = quanto è chiaro.
 // sfoca = larghezza di un pixel: i solchi più fini di così si spengono.
 vec2 anelloTau(float r, float sfoca) {
@@ -407,6 +410,233 @@ vec3 aurora(vec3 q, vec3 pw) {
   return uAuroraCol * exp(-z * z) * tende * (0.12 + 0.88 * notte) * uAurora;
 }
 
+// --- La civiltà (PROGETTO.md, 2.6) ---------------------------------------------------------------
+// civilta.js costruisce città e strade e le mette in due tabelle. uCivIndice dice, per ogni cella di una
+// griglia 64 × 64 su ogni faccia del cubo, dove iniziano i suoi elementi in uCivDati e quanti sono.
+// Città: (centro, raggio) e (popolazione, angolo, seme, 0); tratto di strada: (a, larghezza) e (b, classe).
+// In ogni cella vengono prima le città, dalla più grande, poi le strade.
+const float ISOLATO = 0.000024; // lato di un isolato, in raggi: a quota minima è una decina di pixel
+const float CAMPO = 0.00007;    // lato di un campo coltivato
+
+// La faccia del cubo è l'asse più grande (a parità vince x, poi y), come faccia() in civilta.js.
+int facciaCubo(vec3 q, out vec2 uv) {
+  vec3 a = abs(q);
+  if (a.x >= a.y && a.x >= a.z) { uv = q.yz / a.x; return q.x >= 0.0 ? 0 : 1; }
+  if (a.y >= a.z) { uv = q.xz / a.y; return q.y >= 0.0 ? 2 : 3; }
+  uv = q.xy / a.z;
+  return q.z >= 0.0 ? 4 : 5;
+}
+vec3 dallaFaccia(int f, vec2 uv) {
+  float s = (f & 1) == 0 ? 1.0 : -1.0;
+  return normalize(f < 2 ? vec3(s, uv) : (f < 4 ? vec3(uv.x, s, uv.y) : vec3(uv, s)));
+}
+ivec2 cellaCiv(vec3 q) {
+  vec2 uv;
+  int f = facciaCubo(q, uv);
+  ivec2 c = clamp(ivec2(floor((uv + 1.0) * 32.0)), ivec2(0), ivec2(63));
+  return ivec2(f * 64 + c.x, c.y);
+}
+vec4 civDato(int i) { return texelFetch(uCivDati, ivec2(i & 511, i >> 9), 0); }
+
+// Distanza da un tratto di strada sulla sfera; t dice dove cade lungo il tratto (0-1).
+float distTratto(vec3 q, vec3 a, vec3 b, out float t) {
+  vec3 ab = b - a;
+  t = clamp(dot(q - a, ab) / dot(ab, ab), 0.0, 1.0);
+  return length(q - normalize(a + ab * t));
+}
+
+// Coordinate sul piano tangente in c, girate dell'angolo della città (le stesse tangenti di civilta.js).
+vec2 locale(vec3 q, vec3 c, float angolo) {
+  vec3 t1 = normalize(cross(c, abs(c.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+  vec3 t2 = cross(c, t1);
+  vec3 d = q - c;
+  vec2 l = vec2(dot(d, t1), dot(d, t2));
+  float co = cos(angolo), si = sin(angolo);
+  return vec2(co * l.x + si * l.y, co * l.y - si * l.x);
+}
+
+// Una rotazione piccola e diversa per ogni quartiere di 8 × 8: la città è cresciuta a pezzi.
+vec2 aPezzi(vec2 g, int seme, float forza) {
+  vec2 qi = floor(g / 8.0);
+  float r = (h33(ivec3(ivec2(qi), seme)).x - 0.5) * forza;
+  vec2 cq = (qi + 0.5) * 8.0, d = g - cq;
+  return cq + vec2(d.x * cos(r) - d.y * sin(r), d.x * sin(r) + d.y * cos(r));
+}
+
+// Il disegno di una città dall'alto, con g contato in isolati e pi = un pixel in isolati.
+// x = via (0-1), y = tono dell'isolato (±0,25), z = parco (0 o 1), w = quanto il disegno si distingue;
+// quartiere = quanto è fitto il suo quartiere (0-1), che si vede anche quando gli isolati non si distinguono.
+vec4 vie(vec2 g, int seme, float pi, out float quartiere) {
+  quartiere = mix(0.5, h33(ivec3(ivec2(floor(g / 8.0)), seme + 4243)).x, smoothstep(1.0, 2.5, 8.0 / pi));
+  g = aPezzi(g, seme + 7001, 0.24);
+  vec3 h = h33(ivec3(ivec2(floor(g)), seme));
+  vec2 dv = abs(g - floor(g + 0.5));              // dalla via più vicina
+  vec2 dl = abs(g - 4.0 * floor(g / 4.0 + 0.5));  // dal viale, uno ogni quattro isolati
+  float a = 0.5 * pi;
+  vec2 via = 1.0 - smoothstep(vec2(0.06 - a), vec2(0.06 + a), dv);
+  vec2 viale = 1.0 - smoothstep(vec2(0.14 - a), vec2(0.14 + a), dl);
+  return vec4(max(max(via.x, via.y), max(viale.x, viale.y)), (h.x - 0.5) * 0.5, step(h.y, 0.07), smoothstep(1.5, 3.0, 1.0 / pi));
+}
+
+// I campi attorno a una città: una scacchiera girata a pezzi, ogni campo col suo colore tra pianura e
+// sabbia, qualcuno arato. Sotto un pixel e mezzo per campo resta il colore medio: un alone a mosaico.
+vec3 campi(vec2 g, int seme, float pi) {
+  vec3 hq = h33(ivec3(ivec2(floor(g / 8.0)), seme + 5113));
+  g = aPezzi(g, seme + 3301, 0.5);
+  vec3 h = h33(ivec3(ivec2(floor(g)), seme + 911));
+  vec3 col = h.y < 0.14 ? uCol[2] * 0.72 : mix(uCol[3], uCol[2], h.x * 0.85);
+  vec2 dv = abs(g - floor(g + 0.5));
+  float a = 0.5 * pi;
+  vec2 siepe = 1.0 - smoothstep(vec2(0.03 - a), vec2(0.03 + a), dv);
+  col *= 1.0 - 0.25 * max(siepe.x, siepe.y);
+  // da media quota resta il mosaico dei gruppi di 8 × 8 campi, ognuno col suo tono; più in alto il colore medio
+  vec3 gruppo = mix(uCol[3], uCol[2], 0.1 + 0.65 * hq.x) * (0.82 + 0.25 * hq.y);
+  vec3 lontano = mix(mix(uCol[3], uCol[2], 0.42) * 0.93, gruppo, smoothstep(1.0, 2.5, 8.0 / pi));
+  return mix(lontano, col, smoothstep(1.0, 2.5, 1.0 / pi));
+}
+
+// La civiltà su un punto di terra: cambia l'albedo e accende le luci della notte.
+// Restituisce quanto il punto è costruito e quanto è campo: lì il rilievo si appiattisce.
+vec2 civTerra(vec3 q, float e, float px, float calotta, float notte, inout vec3 alb, inout vec3 emiss) {
+  vec4 ind = texelFetch(uCivIndice, cellaCiv(q), 0);
+  int inizio = int(ind.x), quanti = int(ind.y);
+  float costr = 0.0, centro = 0.0;          // il costruito della città che domina il punto, e quanto si è al centro
+  vec4 dom = vec4(0.0), domB = vec4(0.0);   // quella città
+  float zc = 0.0;                           // la zona dei campi, e la sua città
+  vec4 cmp = vec4(0.0), cmpB = vec4(0.0);
+  float vD = 1e9, vR = 0.0;                 // la città più vicina, per le case lungo le strade
+  float puntoAlb = 0.0, puntoLuce = 0.0;    // le città più piccole di un pixel e mezzo: un punto
+  float strada = 0.0, chiara = 0.0, filo = 0.0, striscia = 0.0;
+  for (int k = 0; k < 20; k++) {
+    if (k >= quanti) break;
+    vec4 a = civDato(inizio + 2 * k), b = civDato(inizio + 2 * k + 1);
+    if (b.w < 0.5) {
+      // una città
+      vec3 dv = q - a.xyz;
+      float d = length(dv), R = a.w;
+      if (d > 4.6 * R + 2.5 * px) continue;
+      float rp = R / px;
+      float pf = 1.0 - smoothstep(1.0, 2.0, rp);
+      if (pf > 0.0) {
+        // la sua luce va come l'area, con un tetto: da lontano la notte è fatta di punti, e le prime
+        // cento città si vedono anche dallo spazio (il guadagno fa la parte dell'alone dell'aria)
+        float gs = exp(-1.4 * d * d / (px * px));
+        puntoAlb = max(puntoAlb, pf * gs * min(1.0, 1.6 * rp * rp));
+        puntoLuce += pf * gs * min(1.6, 25.0 * rp * rp);
+        // l'alone delle città grandi, dentro la zona che la città occupa nell'indice (come in civilta.js)
+        float rz = max(4.5 * R, 0.006) + 0.002;
+        puntoLuce += pf * exp(-0.3 * d * d / (px * px)) * min(0.45, 2.0 * rp * rp) * (1.0 - smoothstep(0.7 * rz, rz, d));
+      }
+      if (pf < 1.0) {
+        float Rb = R * (0.75 + 0.5 * rumore(dv * (3.0 / R) + b.z * vec3(0.0137, 0.0291, 0.0073))); // il bordo irregolare
+        float c = (1.0 - smoothstep(0.55 * Rb, Rb, d)) * (1.0 - pf);
+        if (c > costr) {
+          costr = c;
+          dom = a;
+          domB = b;
+          centro = 1.0 - smoothstep(0.15 * R, 0.35 * R, d);
+        }
+        if (d / Rb < vD) {
+          vD = d / Rb;
+          vR = Rb;
+        }
+        float z = smoothstep(1.2 * Rb, 1.7 * Rb, d) * (1.0 - smoothstep(3.3 * Rb, 4.0 * Rb, d)) * (1.0 - pf);
+        if (z > zc) {
+          zc = z;
+          cmp = a;
+          cmpB = b;
+        }
+      }
+    } else {
+      // un tratto di strada
+      float t;
+      float d = distTratto(q, a.xyz, b.xyz, t);
+      float lw = a.w;
+      if (vD < 2.6) {
+        // le case seguono le strade: una striscia di costruito che esce dalla città
+        float ws = max(0.04 * vR, 2.0 * ISOLATO);
+        striscia = max(striscia, clamp((ws - d) / px + 0.5, 0.0, 1.0) * min(1.0, ws / px) * (1.0 - smoothstep(1.0, 2.6, vD)));
+      }
+      if (d > lw + 2.0 * px) continue;
+      // più sottile di un pixel, la strada sbiadisce in proporzione: da lontano scompare
+      float cop = clamp((0.5 * lw - d) / px + 0.5, 0.0, 1.0) * min(1.0, lw / px);
+      if (cop > strada) {
+        strada = cop;
+        chiara = step(2.5, b.w);
+      }
+      if (b.w > 2.5) {
+        // lungo le autostrade un filo di luci, a punti quando si distinguono
+        float lungo = t * length(b.xyz - a.xyz) / (8.0 * lw);
+        float punti = mix(0.6, 1.0 - smoothstep(0.15, 0.3, abs(fract(lungo) - 0.5)), smoothstep(1.0, 3.0, 8.0 * lw / px));
+        filo = max(filo, cop * punti);
+      }
+    }
+  }
+
+  float terra = (1.0 - calotta) * uCivPronta;
+  // i campi, dal livello 2, solo in pianura e sotto tutto il resto
+  zc *= (1.0 - smoothstep(0.12, 0.2, e)) * step(1.5, uCiv);
+  if (zc > 0.0) alb = mix(alb, campi(locale(q, cmp.xyz, cmpB.y + 0.4) / CAMPO, int(cmpB.z), px / CAMPO), zc * terra * 0.9);
+  // il pianeta-città: costruito su tutte le terre abitabili, a quartieri di 0,01 col loro orientamento
+  float rete = 0.0;
+  if (uCiv > 4.5) {
+    float ovunque = smoothstep(0.0, 0.006, e) * (1.0 - smoothstep(0.32, 0.45, e));
+    rete = clamp(rumore(q * 45.0 + 3.0) * 2.6 + rumore(q * 130.0 + 8.0) * 2.6, -1.0, 1.0);
+    if (ovunque > costr) {
+      vec2 uv;
+      int f = facciaCubo(q, uv);
+      vec2 ci = floor(uv / 0.01);
+      vec3 h = h33(ivec3(ivec2(ci), f + 77));
+      dom = vec4(dallaFaccia(f, (ci + 0.5) * 0.01), 0.004);
+      domB = vec4(0.0, h.x * 1.5708, floor(h.y * 65535.0), 0.0);
+      costr = ovunque;
+      centro = 0.0;
+    }
+  }
+  float luceCitta = 0.0;
+  costr = max(costr, striscia * 0.7);
+  if (costr > 0.0) {
+    float quartiere;
+    vec4 v = vie(locale(q, dom.xyz, domB.y) / ISOLATO, int(domB.z), px / ISOLATO, quartiere);
+    vec3 grigio = mix(vec3(0.42, 0.41, 0.40), vec3(0.55, 0.53, 0.50), 0.5 + 2.0 * v.y) * (1.0 + v.y) * (1.0 - 0.2 * centro);
+    vec3 casa = mix(grigio, alb, 0.15);   // tinto dal suolo
+    vec3 disegno = mix(v.z > 0.5 ? mix(uCol[4], uCol[3], 0.35) : casa, vec3(0.19, 0.19, 0.2), v.x);
+    vec3 medio = mix(vec3(0.485, 0.47, 0.45), alb, 0.15) * (0.86 - 0.13 * centro) * (1.0 + 0.12 * rete) * (0.9 + 0.2 * quartiere);
+    alb = mix(alb, mix(medio, disegno, v.w), costr * terra);
+    // di notte le vie sono le più accese, i parchi bui
+    // in media quanto da lontano, così scendendo la luce non cambia: vie accese, isolati fiochi
+    float fitto = (0.3 + 0.25 * centro) * (0.45 + 1.1 * quartiere) * (1.0 + 0.35 * rete);
+    float accese = v.z > 0.5 ? 0.02 : mix(0.12 * (1.0 + 0.8 * v.y), 1.4, v.x);
+    luceCitta = pow(costr, 1.5) * mix(fitto, accese * fitto / 0.35, v.w);
+  }
+  alb = mix(alb, vec3(0.45, 0.44, 0.42), puntoAlb * terra);
+  alb = mix(alb, mix(vec3(0.52, 0.52, 0.5), vec3(0.68, 0.67, 0.64), chiara), strada * terra);
+  // la notte: da lontano è fatta di punti, scendendo diventano reticoli; i campi restano bui
+  emiss += uCol[10] * (luceCitta * 1.6 + puntoLuce + filo * 1.2) * notte * terra;
+  return vec2(costr, zc) * terra;
+}
+
+// Sul mare si disegnano solo i ponti: le statali e le autostrade che passano l'acqua. Restituisce quanto copre.
+float civMare(vec3 q, float px, float notte, inout vec3 alb, inout vec3 emiss) {
+  vec4 ind = texelFetch(uCivIndice, cellaCiv(q), 0);
+  int inizio = int(ind.x), quanti = int(ind.y);
+  float ponte = 0.0;
+  for (int k = 0; k < 20; k++) {
+    if (k >= quanti) break;
+    vec4 b = civDato(inizio + 2 * k + 1);
+    if (b.w < 1.5) continue;
+    vec4 a = civDato(inizio + 2 * k);
+    float t;
+    float d = distTratto(q, a.xyz, b.xyz, t);
+    if (d > a.w + 2.0 * px) continue;
+    ponte = max(ponte, clamp((0.5 * a.w - d) / px + 0.5, 0.0, 1.0) * min(1.0, a.w / px));
+  }
+  ponte *= uCivPronta;
+  alb = mix(alb, vec3(0.5, 0.5, 0.48), ponte);
+  emiss += uCol[10] * ponte * 0.8 * notte;
+  return ponte;
+}
+
 // Pianeti di roccia, d'acqua, di ghiaccio e di lava. luce = il colore della luce che arriva al suolo.
 vec3 roccioso(vec3 pw, vec3 q, vec3 rd, vec3 luce, float px) {
   int n = uQual == 2 ? 6 : (uQual == 1 ? 5 : 4);
@@ -442,6 +672,7 @@ vec3 roccioso(vec3 pw, vec3 q, vec3 rd, vec3 luce, float px) {
       float b = max(rumore(q * 40.0 + vec3(0.0, uTempo * 0.01, 0.0)) * 2.0 + 0.3, 0.0);
       emiss += vec3(0.15, 0.9, 0.8) * 0.6 * buio * b * b * (0.35 + 0.65 * (1.0 - smoothstep(0.0, 0.12, -e))) * (1.0 - calotta);
     }
+    if (uCiv > 1.5 && uCivPronta > 0.0) spec *= 1.0 - civMare(q, px, 1.0 - smoothstep(-0.14, 0.06, dot(pw, uSole)), alb, emiss);
   } else if (liquido) {
     // mare di lava: vene incandescenti tra zolle di crosta scura
     float v = 1.0 - abs(rumore(q * uCrepeFreq * 1.7 + vec3(1.7, 8.8 + uTempo * 0.006, 4.4))) * 3.2;
@@ -496,19 +727,10 @@ vec3 roccioso(vec3 pw, vec3 q, vec3 rd, vec3 luce, float px) {
     spec = uLucido * 0.6 + calotta * 0.15;
     lustro = 40.0;
 
-    // uCitta è il livello della civiltà (0-5): più è alto, più sono larghe le zone accese
-    float citta5 = step(4.5, uCitta); // il pianeta-città: costruito su tutte le terre basse
-    if (uCitta > 0.0 && e > 0.0 && e < 0.35 + 0.3 * citta5) {
-      float rete = rumore(q * 45.0 + 3.0) * 2.6 + rumore(q * 130.0 + 8.0) * 2.6;
-      // di giorno il pianeta-città è grigio di cemento, a isolati
-      alb = mix(alb, vec3(0.3, 0.3, 0.31) * (0.75 + 0.25 * clamp(rete, -1.0, 1.0)), 0.75 * citta5 * (1.0 - calotta));
-      // città: nelle pianure, a grappoli, accese solo di notte
-      float notte = 1.0 - smoothstep(-0.14, 0.06, dot(pw, uSole));
-      if (notte > 0.0) {
-        float zona = smoothstep(0.1, 0.5, rumore(q * 6.0 + vec3(3.9, 6.6, 1.3)) * 2.6 + 0.25 + 0.1 * uCitta - e * 1.6);
-        zona = max(zona, citta5) * (1.0 - calotta);
-        emiss += uCol[10] * zona * smoothstep(0.15, 0.9, rete + zona * 0.5) * notte * 1.6;
-      }
+    // la civiltà: città, vie, strade e campi costruiti da civilta.js
+    if (uCiv > 0.0 && uCivPronta > 0.0) {
+      vec2 piatto = civTerra(q, e, px, calotta, 1.0 - smoothstep(-0.14, 0.06, dot(pw, uSole)), alb, emiss);
+      N = normalize(mix(N, pw, clamp(0.8 * piatto.x + 0.45 * piatto.y, 0.0, 1.0)));
     }
   }
 

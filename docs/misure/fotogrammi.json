@@ -1,0 +1,19 @@
+{
+  "cosa": "fotogrammi al secondo su un mondo con civiltà (Estia, livello 3: 847 città, 770 strade), qualità 2, sopra la capitale; motore.misura(30)",
+  "data": "2026-11-10",
+  "dove": "MacBook Pro M4, pannello del browser dell'app in secondo piano (i tempi possono essere un po' peggiori del vero)",
+  "risoluzione": "1426 × 1926 pixel veri (dpr 2), scala 1",
+  "misure": [
+    { "quota": 5.9, "momento": "giorno", "ms": 22.33, "fps": 45 },
+    { "quota": 0.3, "momento": "giorno", "ms": 41.96, "fps": 24 },
+    { "quota": 0.3, "momento": "notte", "ms": 38.57, "fps": 26 },
+    { "quota": 0.01, "momento": "giorno", "ms": 46.87, "fps": 21 },
+    { "quota": 0.01, "momento": "notte", "ms": 43.32, "fps": 23 }
+  ],
+  "confronti": {
+    "quota 0,01 senza civiltà": { "fps": 24, "nota": "la civiltà costa circa un fotogramma al secondo: il peso è il terreno fine della fase 2a" },
+    "quota 0,01 con scala 0,75 (1070 × 1445)": { "ms": 29.21, "fps": 34 }
+  },
+  "costruzione": { "Estia (livello 3)": "64-93 ms nel browser", "Elena (pianeta-città)": "108 ms in Node a motore caldo, 233 ms la prima volta" },
+  "esito": "a piena risoluzione da vicino non si arriva a 30: ci pensa la scala automatica del motore, che scende a 0,75 e dà 34. Se sul pannello in primo piano restasse lento, il passo successivo del progetto è il tetto delle ottave fini a 9."
+}

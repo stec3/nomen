@@ -3,6 +3,7 @@
 // Uso: node tools/oro.js
 import { writeFileSync } from 'node:fs';
 import { pianeta } from '../js/nome.js';
+import { costruisci, improntaTabelle } from '../js/civilta.js';
 
 const NOMI = ['Atena', 'Zeus', 'Gaia', 'Nettuno', 'Marte', 'Ermes', 'Giove', 'Iside', 'Orfeo', 'Aurora', 'Freya', 'Odino'];
 
@@ -26,6 +27,11 @@ const righe = NOMI.map((nome) => {
   const voce = { tipo: p.tipo, tratti: p.tratti, livello: p.rarita.livello, valori: foglie(p) };
   return `    ${JSON.stringify(nome)}: ${JSON.stringify(voce)}`;
 });
+// e per chi ha una civiltà, l'impronta delle sue tabelle: stesso nome, stesse città e strade
+const civilta = NOMI.filter((nome) => pianeta(nome).civilta).map((nome) => `    ${JSON.stringify(nome)}: ${JSON.stringify(improntaTabelle(costruisci(pianeta(nome))))}`);
 // un nome per riga: il file resta leggibile e le differenze si vedono
-writeFileSync(new URL('../tests/oro.json', import.meta.url), `{\n  "versione": 1,\n  "nomi": {\n${righe.join(',\n')}\n  }\n}\n`);
-console.log(`tests/oro.json: ${NOMI.length} nomi fissati`);
+writeFileSync(
+  new URL('../tests/oro.json', import.meta.url),
+  `{\n  "versione": 1,\n  "nomi": {\n${righe.join(',\n')}\n  },\n  "civilta": {\n${civilta.join(',\n')}\n  }\n}\n`,
+);
+console.log(`tests/oro.json: ${NOMI.length} nomi fissati, ${civilta.length} civiltà`);

@@ -56,7 +56,7 @@ export function normalizza(nome) {
 const codifica = new TextEncoder();
 
 // Rimescola i bit di un intero a 32 bit (è il passo finale di MurmurHash3).
-function mischia(h) {
+export function mischia(h) {
   h ^= h >>> 16;
   h = Math.imul(h, 0x85ebca6b);
   h ^= h >>> 13;

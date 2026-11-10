@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nomen — confronto del terreno</title>
+<style>
+  body { background: #0b0c10; color: #d8dbe4; font: 14px/1.5 system-ui, sans-serif; margin: 16px; }
+  pre { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<!--
+  Il terreno in JavaScript (js/terreno.js) deve dare la stessa quota dello shader, altrimenti le città
+  finiscono in mare. Qui la scheda grafica disegna la quota su una mappa, la si rilegge con readPixels
+  e la si confronta punto per punto. Il risultato è in window.esito, da salvare in docs/misure/confronto.json.
+-->
+<pre id="esito">Confronto in corso…</pre>
+<script type="module">
+import { VERTICI, INTESTAZIONE, RUMORE, ARIA, ANELLI, SUPERFICIE } from '../js/glsl.js';
+import { pianeta } from '../js/nome.js';
+import { uniformi } from '../js/motore.js';
+import { creaTerreno } from '../js/terreno.js';
+
+const L = 256, H = 128; // la mappa: longitudine per latitudine, 32.768 punti per nome
+const NOMI = ['Atena', 'Zeus', 'Gaia', 'Nettuno', 'Marte', 'Ermes', 'Giove', 'Iside', 'Orfeo', 'Aurora', 'Freya', 'Odino', 'Elena', 'Viracocha', 'Proteo', 'Polluce'];
+
+// la quota di base a qualità piena, scritta in tre byte (precisione 5 · 10⁻⁷); il mare si toglie dopo,
+// perché nei giganti gassosi sta a −9 apposta e uscirebbe dalla scala
+const MAPPA = `
+void main() {
+  gSeme = uSemeI;
+  vec2 c = gl_FragCoord.xy;
+  float lon = c.x / ${L}.0 * 6.2831853 - 3.14159265;
+  float lat = c.y / ${H}.0 * 3.14159265 - 1.5707963;
+  vec3 q = vec3(cos(lat) * sin(lon), sin(lat), cos(lat) * cos(lon));
+  float h = quota(q, 6);
+  uint k = uint(clamp((h + 4.0) / 8.0, 0.0, 1.0) * 16777215.0 + 0.5);
+  esito = vec4(float(k >> 16u), float((k >> 8u) & 255u), float(k & 255u), 255.0) / 255.0;
+}`;
+
+const tela = document.createElement('canvas');
+tela.width = L;
+tela.height = H;
+const gl = tela.getContext('webgl2', { antialias: false });
+const shader = (tipo, sorgente) => {
+  const s = gl.createShader(tipo);
+  gl.shaderSource(s, sorgente);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+};
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, VERTICI));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, [INTESTAZIONE, RUMORE, ARIA, ANELLI, SUPERFICIE, MAPPA].join('\n')));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+gl.viewport(0, 0, L, H);
+
+const px = new Uint8Array(L * H * 4);
+const righe = [];
+let peggiore = 0;
+for (const nome of NOMI) {
+  const p = pianeta(nome);
+  const u = uniformi(p);
+  for (const k of ['uFreq', 'uPiega', 'uGuad', 'uScala', 'uMare', 'uCreste']) gl.uniform1f(gl.getUniformLocation(prog, k), u[k]);
+  gl.uniform3iv(gl.getUniformLocation(prog, 'uSemeI'), u.uSemeI);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.readPixels(0, 0, L, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+
+  const quota = creaTerreno(p);
+  let max = 0, somma = 0, discordi = 0;
+  for (let j = 0; j < H; j++) {
+    const lat = ((j + 0.5) / H) * Math.PI - Math.PI / 2;
+    for (let i = 0; i < L; i++) {
+      const lon = ((i + 0.5) / L) * 2 * Math.PI - Math.PI;
+      const o = (j * L + i) * 4;
+      const gpu = ((px[o] * 65536 + px[o + 1] * 256 + px[o + 2]) / 16777215) * 8 - 4 - u.uMare;
+      const js = quota(Math.cos(lat) * Math.sin(lon), Math.sin(lat), Math.cos(lat) * Math.cos(lon));
+      const d = Math.abs(gpu - js);
+      max = Math.max(max, d);
+      somma += d;
+      if (gpu < 0 !== js < 0) discordi++; // terra da una parte, mare dall'altra
+    }
+  }
+  peggiore = Math.max(peggiore, max);
+  righe.push({ nome, tipo: p.tipo, scartoMassimo: +max.toExponential(2), scartoMedio: +(somma / (L * H)).toExponential(2), costaDiscorde: discordi });
+}
+
+window.esito = {
+  data: new Date().toISOString().slice(0, 10),
+  scheda: gl.getParameter(gl.RENDERER),
+  punti: L * H,
+  soglia: 0.002,
+  scartoMassimo: +peggiore.toExponential(2),
+  superato: peggiore < 0.002,
+  nomi: righe,
+};
+document.getElementById('esito').textContent = JSON.stringify(window.esito, null, 2);
+</script>
+</body>
+</html>
