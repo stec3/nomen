@@ -30,7 +30,7 @@ const motore = creaMotore(tela);
 const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
 /**
- * celle: nomi, oppure oggetti { nome, giro, alzo, zoom, tempo, qualita, ritocca(p) }.
+ * celle: nomi, oppure oggetti { nome, giro, alzo, zoom, quota, tempo, qualita, ritocca(p) }.
  * opzioni: gli stessi valori per tutte le celle, più colonne, lato (pixel veri), forma (alto/largo), etichette.
  */
 function griglia(celle, o = {}) {
@@ -59,6 +59,7 @@ function griglia(celle, o = {}) {
       giro: c.giro ?? o.giro ?? 0,
       alzo: c.alzo ?? o.alzo ?? 0.22,
       zoom: c.zoom ?? o.zoom ?? 1,
+      quota: c.quota ?? o.quota,
     });
     motore.disegna();
     const x = (i % colonne) * lato;

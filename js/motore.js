@@ -3,6 +3,7 @@ import { VERTICI, SPAZIO } from './glsl.js';
 import { SOLE, CAMERA } from './nome.js';
 
 const TAN_FOV = 0.25; // tangente di mezzo campo visivo: un teleobiettivo, il pianeta resta tondo
+const QUOTA_MIN = 0.006; // la camera più bassa, in raggi: sotto servono coordinate relative alla camera
 const INTERI = new Set(['uTipo', 'uLiquido', 'uLune', 'uQual']);
 const FORME = { uSemeI: 'i3', uCol: '3', uLunaCol: '3', uLuna: '4', uTempesta: '4', uCiclone: '4', uCam: 'm', uRot: 'm', uRotNubi: 'm', uCielo: 'm' };
 
@@ -13,6 +14,18 @@ const unita = (v) => {
 };
 const somma = (a, ka, b, kb) => [a[0] * ka + b[0] * kb, a[1] * ka + b[1] * kb, a[2] * ka + b[2] * kb];
 const stringi = (x, min, max) => Math.min(max, Math.max(min, x));
+const punto = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const liscio = (a, b, x) => {
+  const t = stringi((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+// v girato di f radianti attorno all'asse unitario k, verso della mano destra (formula di Rodrigues)
+function ruota(v, k, f) {
+  const [c, s] = [Math.cos(f), Math.sin(f)];
+  const kv = punto(k, v) * (1 - c);
+  const kx = vett(k, v);
+  return [0, 1, 2].map((i) => v[i] * c + kx[i] * s + k[i] * kv);
+}
 
 // Rotazione da tre angoli, come matrice per colonne: orienta la via lattea.
 function rotazione([a, b, c]) {
@@ -127,7 +140,8 @@ export function creaMotore(tela) {
   }
 
   // --- stato -----------------------------------------------------------------
-  const cam = { giro: CAMERA.giro, alzo: CAMERA.alzo, dist: 7, vGiro: 0, vAlzo: 0, zoom: 1 };
+  // quota: altezza sul suolo in raggi; aggancio: quanto la camera ha girato insieme al pianeta
+  const cam = { giro: CAMERA.giro, alzo: CAMERA.alzo, quota: 5.9, dist: 7, vGiro: 0, vAlzo: 0, aggancio: 0 };
   let pianeta = null;
   let prossimo = null;
   let velo = 0; // dissolvenza: 0 buio, 1 pieno
@@ -151,7 +165,8 @@ export function creaMotore(tela) {
     cam.giro = CAMERA.giro;
     cam.alzo = CAMERA.alzo;
     cam.vGiro = cam.vAlzo = 0;
-    cam.zoom = 1;
+    cam.quota = distanzaBase() - 1;
+    cam.aggancio = 0;
   }
 
   // Matrice mondo → pianeta, col pianeta girato di un angolo attorno al suo asse.
@@ -160,6 +175,72 @@ export function creaMotore(tela) {
     const ex = somma(e1, Math.cos(angolo), e3, -Math.sin(angolo));
     const ez = somma(e1, Math.sin(angolo), e3, Math.cos(angolo));
     return [ex[0], a[0], ez[0], ex[1], a[1], ez[1], ex[2], a[2], ez[2]];
+  }
+
+  // Distanza di partenza: il pianeta occupa poco più di metà del lato corto, e gli anelli devono starci.
+  function distanzaBase() {
+    const aspetto = (tela.clientWidth || tela.width) / (tela.clientHeight || tela.height);
+    let d = 6.9 / Math.min(1, aspetto);
+    if (pianeta?.anelli) d = Math.max(d, (0.82 * pianeta.anelli.esterno) / (TAN_FOV * aspetto));
+    return d;
+  }
+  const quotaMax = () => 2.2 * distanzaBase() - 1;
+
+  // Gli assi della camera: direzione da giro e alzo, poi girata col pianeta di cam.aggancio.
+  function vista() {
+    const [cg, sg, ca, sa] = [Math.cos(cam.giro), Math.sin(cam.giro), Math.cos(cam.alzo), Math.sin(cam.alzo)];
+    let dir = [sg * ca, sa, cg * ca];
+    let destra = [cg, 0, -sg];
+    if (cam.aggancio) {
+      dir = ruota(dir, basi.a, cam.aggancio);
+      destra = ruota(destra, basi.a, cam.aggancio);
+    }
+    const avanti = dir.map((c) => -c);
+    const morbido = velo * velo * (3 - 2 * velo);
+    const aspetto = (tela.clientWidth || tela.width) / (tela.clientHeight || tela.height);
+    return {
+      dir,
+      destra,
+      avanti,
+      alto: vett(destra, avanti),
+      dist: (1 + cam.quota) * (1.12 - 0.12 * morbido),
+      // da vicino il pianeta torna al centro dello schermo: si guarda il suolo sotto il centro
+      centro: [0, (aspetto < 1 ? 0.16 : 0.11) * liscio(0.5, 3.0, cam.quota)],
+    };
+  }
+
+  // Il punto del suolo sotto (x, y), in pixel della tela; null se lì c'è il cielo. Lo stesso conto dello shader.
+  function suoloSotto(x, y) {
+    if (!pianeta) return null;
+    const v = vista();
+    const [l, h] = [tela.clientWidth, tela.clientHeight];
+    const u = ((2 * x - l) / h - v.centro[0]) * TAN_FOV;
+    const w = ((h - 2 * y) / h - v.centro[1]) * TAN_FOV;
+    const rd = unita(somma(somma(v.destra, u, v.alto, w), 1, v.avanti, 1));
+    const ro = v.dir.map((c) => c * v.dist);
+    const b = punto(ro, rd);
+    const delta = b * b - punto(ro, ro) + 1;
+    if (b > 0 || delta < 0) return null;
+    return unita(somma(ro, 1, rd, -b - Math.sqrt(delta)));
+  }
+
+  // Cambia la quota di un fattore k tenendo fermo il suolo sotto (x, y): lo zoom va dove punta il cursore.
+  function avvicina(k, x, y) {
+    const prima = suoloSotto(x, y);
+    cam.quota = stringi(cam.quota * k, QUOTA_MIN, quotaMax());
+    // la camera gira come serve perché il punto torni sotto il cursore; il secondo e il terzo giro
+    // correggono quel poco che si perde perché la camera non si inclina mai di lato
+    for (let i = 0; prima && i < 3; i++) {
+      const dopo = suoloSotto(x, y);
+      if (!dopo) return;
+      const asse = vett(dopo, prima);
+      const s = Math.hypot(...asse);
+      if (s < 1e-9) return;
+      let dir = ruota(vista().dir, asse.map((c) => c / s), Math.atan2(s, punto(dopo, prima)));
+      if (cam.aggancio) dir = ruota(dir, basi.a, -cam.aggancio);
+      cam.giro = Math.atan2(dir[0], dir[2]);
+      cam.alzo = stringi(Math.asin(stringi(dir[1], -1, 1)), -1.45, 1.45);
+    }
   }
 
   function misure() {
@@ -176,18 +257,9 @@ export function creaMotore(tela) {
   function disegna() {
     if (!pianeta) return;
     misure();
-    const aspetto = tela.width / tela.height;
-
-    // distanza: il pianeta occupa poco più di metà del lato corto; gli anelli devono starci
-    let dist = 6.9 / Math.min(1, aspetto);
-    if (pianeta.anelli) dist = Math.max(dist, (0.82 * pianeta.anelli.esterno) / (TAN_FOV * aspetto));
-    cam.dist = dist * cam.zoom * (1.12 - 0.12 * velo * velo * (3 - 2 * velo));
-
-    const [cg, sg, ca, sa] = [Math.cos(cam.giro), Math.sin(cam.giro), Math.cos(cam.alzo), Math.sin(cam.alzo)];
-    const dir = [sg * ca, sa, cg * ca];
-    const avanti = dir.map((v) => -v);
-    const destra = [cg, 0, -sg];
-    const alto = vett(destra, avanti);
+    cam.quota = stringi(cam.quota, QUOTA_MIN, quotaMax());
+    const vis = vista();
+    cam.dist = vis.dist;
 
     const angolo = (tempo * Math.PI * 2) / pianeta.giorno;
     const lune = new Float32Array(12);
@@ -202,10 +274,11 @@ export function creaMotore(tela) {
 
     manda('uRis', [tela.width, tela.height]);
     manda('uTempo', tempo);
-    manda('uCamPos', dir.map((v) => v * cam.dist));
-    manda('uCam', [...destra, ...alto, ...avanti]);
+    manda('uCamPos', vis.dir.map((c) => c * vis.dist));
+    manda('uCam', [...vis.destra, ...vis.alto, ...vis.avanti]);
     manda('uTanFov', TAN_FOV);
-    manda('uCentro', [0, aspetto < 1 ? 0.16 : 0.11]);
+    manda('uCentro', vis.centro);
+    manda('uQuota', vis.dist - 1);
     manda('uEspo', 1.1);
     manda('uVelo', velo * velo * (3 - 2 * velo));
     manda('uQual', qualita);
@@ -246,7 +319,11 @@ export function creaMotore(tela) {
     const dt = Math.min((ora - ultimo) / 1000, 0.1);
     const saltato = ora - ultimo > 250; // scheda in secondo piano: non conta come lentezza
     ultimo = ora;
-    if (!fermo) tempo += dt;
+    if (!fermo) {
+      tempo += dt;
+      // da vicino la camera gira insieme al pianeta: il suolo sotto resta fermo e si vede arrivare la sera
+      if (pianeta) cam.aggancio += (1 - liscio(0.3, 2.0, cam.quota)) * ((2 * Math.PI) / pianeta.giorno) * dt;
+    }
 
     // dissolvenza: via il pianeta vecchio, dentro il nuovo
     if (prossimo) {
@@ -274,7 +351,6 @@ export function creaMotore(tela) {
   // --- dita e mouse ------------------------------------------------------------
   const punte = new Map();
   let pizzico = 0;
-  const ingrandisci = (k) => (cam.zoom = stringi(cam.zoom * k, 0.42, 2.2));
 
   tela.addEventListener('pointerdown', (e) => {
     tela.setPointerCapture(e.pointerId);
@@ -286,9 +362,10 @@ export function creaMotore(tela) {
     if (!prima) return;
     punte.set(e.pointerId, [e.clientX, e.clientY]);
     if (punte.size === 1) {
-      // il pianeta segue il dito: la camera gli gira attorno dalla parte opposta
-      const k = (3.2 * cam.zoom) / Math.min(tela.clientWidth, tela.clientHeight);
-      cam.vGiro = -(e.clientX - prima[0]) * k;
+      // il pianeta segue il dito: la camera gli gira attorno dalla parte opposta,
+      // di tanti radianti per pixel quanti ne servono perché a ogni quota il suolo resti sotto il dito
+      const k = (2 * TAN_FOV * cam.quota) / tela.clientHeight;
+      cam.vGiro = (-(e.clientX - prima[0]) * k) / Math.max(Math.cos(cam.alzo), 0.2);
       cam.vAlzo = (e.clientY - prima[1]) * k;
       cam.giro += cam.vGiro;
       cam.alzo = stringi(cam.alzo + cam.vAlzo, -1.45, 1.45);
@@ -296,7 +373,8 @@ export function creaMotore(tela) {
     } else if (punte.size === 2) {
       const [a, b] = [...punte.values()];
       const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
-      if (pizzico) ingrandisci(pizzico / d);
+      const r = tela.getBoundingClientRect();
+      if (pizzico) avvicina(pizzico / d, (a[0] + b[0]) / 2 - r.left, (a[1] + b[1]) / 2 - r.top);
       pizzico = d;
     }
   });
@@ -310,7 +388,10 @@ export function creaMotore(tela) {
     'wheel',
     (e) => {
       e.preventDefault();
-      ingrandisci(Math.exp(e.deltaY * 0.0012));
+      const r = tela.getBoundingClientRect();
+      // rotella a righe o a pagine (Firefox) come a pixel; il pizzico del trackpad arriva con ctrlKey
+      const passi = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
+      avvicina(Math.exp(passi * (e.ctrlKey ? 0.008 : 0.0018)), e.clientX - r.left, e.clientY - r.top);
     },
     { passive: false },
   );
@@ -339,9 +420,11 @@ export function creaMotore(tela) {
       if (o.scala !== undefined) scala = tetto = o.scala;
       if (o.giro !== undefined) cam.giro = o.giro;
       if (o.alzo !== undefined) cam.alzo = o.alzo;
-      if (o.zoom !== undefined) cam.zoom = o.zoom;
+      if (o.zoom !== undefined) cam.quota = o.zoom * distanzaBase() - 1; // il vecchio zoom: 1 è la partenza
+      if (o.quota !== undefined) cam.quota = o.quota;
+      if (o.aggancio !== undefined) cam.aggancio = o.aggancio;
     },
-    stato: () => ({ larghezza: tela.width, altezza: tela.height, scala, qualita, mediaMs, tempo }),
+    stato: () => ({ larghezza: tela.width, altezza: tela.height, scala, qualita, mediaMs, tempo, quota: cam.quota }),
     /** Tempo vero di un fotogramma: si disegna e si aspetta la scheda grafica, più volte. */
     misura(fotogrammi = 30) {
       const px = new Uint8Array(4);
@@ -358,5 +441,7 @@ export function creaMotore(tela) {
     },
     /** Un fotogramma disegnato adesso: serve subito prima di copiare la tela in un'immagine. */
     disegna,
+    /** Il punto del suolo (nello spazio, raggio 1) sotto un pixel della tela, o null: per collaudi ed etichette. */
+    suoloSotto,
   };
 }

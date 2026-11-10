@@ -21,6 +21,7 @@ uniform vec3 uCamPos;     // posizione della camera
 uniform mat3 uCam;        // colonne: destra, alto, avanti
 uniform float uTanFov;    // tangente di mezzo campo visivo
 uniform vec2 uCentro;     // spostamento del pianeta rispetto al centro dello schermo
+uniform float uQuota;     // altezza della camera sul suolo, in raggi
 uniform float uEspo;      // esposizione
 uniform float uVelo;      // 0 = buio, 1 = pieno (dissolvenza)
 uniform int uQual;        // 0 leggera, 1 media, 2 piena
@@ -133,6 +134,31 @@ float rumore(vec3 p) {
   return mix(mix(mix(a, b, u.x), mix(c, d, u.x), u.y), mix(mix(e, g, u.x), mix(h, k, u.x), u.y), u.z);
 }
 #undef G
+
+// Lo stesso rumore con la sua derivata (stessi gradienti, stessa curva quintica):
+// x = valore, yzw = gradiente rispetto a p. Serve al dettaglio fine, una valutazione per ottava.
+vec4 rumored(vec3 p) {
+  vec3 fl = floor(p); ivec3 i = ivec3(fl); vec3 f = p - fl;
+  vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  vec3 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+  vec3 ga = h33(i) * 2.0 - 1.0,                 gb = h33(i + ivec3(1, 0, 0)) * 2.0 - 1.0;
+  vec3 gc = h33(i + ivec3(0, 1, 0)) * 2.0 - 1.0, gd = h33(i + ivec3(1, 1, 0)) * 2.0 - 1.0;
+  vec3 ge = h33(i + ivec3(0, 0, 1)) * 2.0 - 1.0, gf = h33(i + ivec3(1, 0, 1)) * 2.0 - 1.0;
+  vec3 gg = h33(i + ivec3(0, 1, 1)) * 2.0 - 1.0, gh = h33(i + ivec3(1, 1, 1)) * 2.0 - 1.0;
+  float va = dot(ga, f),                   vb = dot(gb, f - vec3(1, 0, 0));
+  float vc = dot(gc, f - vec3(0, 1, 0)),   vd = dot(gd, f - vec3(1, 1, 0));
+  float ve = dot(ge, f - vec3(0, 0, 1)),   vf = dot(gf, f - vec3(1, 0, 1));
+  float vg = dot(gg, f - vec3(0, 1, 1)),   vh = dot(gh, f - vec3(1, 1, 1));
+  float k1 = vb - va, k2 = vc - va, k3 = ve - va;
+  float k4 = va - vb - vc + vd, k5 = va - vc - ve + vg, k6 = va - vb - ve + vf;
+  float k7 = -va + vb + vc - vd + ve - vf - vg + vh;
+  float v = va + k1 * u.x + k2 * u.y + k3 * u.z + k4 * u.x * u.y + k5 * u.y * u.z + k6 * u.z * u.x + k7 * u.x * u.y * u.z;
+  vec3 d = ga + u.x * (gb - ga) + u.y * (gc - ga) + u.z * (ge - ga)
+         + u.x * u.y * (ga - gb - gc + gd) + u.y * u.z * (ga - gc - ge + gg) + u.z * u.x * (ga - gb - ge + gf)
+         + u.x * u.y * u.z * (-ga + gb + gc - gd + ge - gf - gg + gh)
+         + du * (vec3(k1, k2, k3) + u.yzx * vec3(k4, k5, k6) + u.zxy * vec3(k6, k4, k5) + u.yzx * u.zxy * k7);
+  return vec4(v, d);
+}
 
 // Tre rumori in uno, tra -1 e 1: serve a piegare le coordinate.
 vec3 rumore3(vec3 p) {
@@ -295,15 +321,58 @@ float ombraAnello(vec3 p) {
 // La superficie: terreno, mare, nuvole, fasce dei giganti gassosi.
 // ---------------------------------------------------------------------------
 export const SUPERFICIE = `
-// Quota del terreno in un punto della sfera: attorno a zero, deviazione 0,33.
-float quota(vec3 q, int n) {
+// Quota del terreno in un punto della sfera: attorno a zero, deviazione 0,33. Piega, n ottave e creste;
+// pf sono le coordinate dell'ottava n, da cui riparte il dettaglio fine.
+float quotaBase(vec3 q, int n, out vec3 pf) {
   vec3 p = q * uFreq;
   p += uPiega * rumore3(p * 0.7 + 31.4);
-  float h = fbm(p, n, uGuad) * uScala;
+  pf = p;
+  float a = 0.5, s = 0.0;
+  for (int i = 0; i < n; i++) {
+    s += a * rumore(pf);
+    pf = GIRA * pf + 11.3;
+    a *= uGuad;
+  }
+  float h = s * uScala;
   // catene di montagne: creste là dove la terra è già alta
   float c = 1.0 - abs(rumore(p * 3.1 + 57.0)) * 2.6;
   h += uCreste * smoothstep(uMare, uMare + 0.35, h) * (c * c - 0.4);
   return h;
+}
+float quota(vec3 q, int n) {
+  vec3 pf;
+  return quotaBase(q, n, pf);
+}
+
+// Da vicino il terreno continua la stessa serie della base, dall'ottava n fino alla 17: una valutazione
+// per ottava, col rumore che porta la sua derivata. Un'ottava entra quando la sua onda è larga qualche
+// pixel, e il ciclo si ferma alla prima troppo fine. Restituisce l'altezza in più; pend è la pendenza
+// rispetto a q (la piega si trascura), frast il frastaglio che rende nitidi i confini.
+float dettaglio(vec3 pf, int n, float px, out vec3 pend, out float frast) {
+  pend = vec3(0.0);
+  frast = 0.0;
+  float lam = 1.0 / (uFreq * pow(2.02, float(n)));
+  if (lam < 2.0 * px) return 0.0; // da lontano: niente da aggiungere
+  int tetto = uQual == 2 ? 12 : (uQual == 1 ? 9 : 6);
+  float a = 0.5 * pow(uGuad, float(n)), a2 = 1.0, s = 0.0;
+  mat3 m = mat3(1.0);
+  for (int i = 0; i < n; i++) m = GIRA * m;
+  vec3 p = pf;
+  for (int k = 0; k < tetto; k++) {
+    float w = smoothstep(2.0, 4.0, lam / px);
+    if (w <= 0.0) break;
+    vec4 r = rumored(p);
+    s += a * w * r.x;
+    pend += a * w * (transpose(m) * r.yzw);
+    frast += a2 * w * r.x;
+    m = GIRA * m;
+    p = GIRA * p + 11.3;
+    a *= uGuad;
+    a2 *= 0.72;
+    lam /= 2.02;
+  }
+  pend *= uFreq * uScala;
+  return s * uScala;
 }
 
 // Lo strato di nuvole in un punto: x = quanto cielo copre (0-1), y = quanto è spesso (0-1).
@@ -341,13 +410,18 @@ vec3 aurora(vec3 q, vec3 pw) {
 // Pianeti di roccia, d'acqua, di ghiaccio e di lava. luce = il colore della luce che arriva al suolo.
 vec3 roccioso(vec3 pw, vec3 q, vec3 rd, vec3 luce, float px) {
   int n = uQual == 2 ? 6 : (uQual == 1 ? 5 : 4);
-  float h = quota(q, n);
+  vec3 pf, pendFine;
+  float frast;
+  float h0 = quotaBase(q, n, pf);
+  // da vicino il terreno continua con le ottave fini: altezza, pendenza e frastaglio dei confini
+  float h = h0 + dettaglio(pf, n, px, pendFine, frast);
   float e = h - uMare;                                  // altezza sul livello del mare
+  float ec = e + 0.003 * frast;                         // la costa, nitida anche da vicino
   float lat = abs(q.y);
   float um = rumore(q * 2.3 + vec3(5.3, 1.9, 8.2)) * 2.0;         // umidità, a grande scala
-  float grana = rumore(q * 26.0 + vec3(2.6, 7.4, 3.8)) * 2.0;     // grana fine
-  bool liquido = uLiquido != 0 && e < 0.0;
-  float calotta = smoothstep(uPoli, uPoli + 0.07, lat + um * 0.06 + grana * 0.012 + max(e, 0.0) * 0.15);
+  float grana = rumore(q * 26.0 + vec3(2.6, 7.4, 3.8)) * 2.0;     // grana fine, per la vista da lontano
+  bool liquido = uLiquido != 0 && ec < 0.0;
+  float calotta = smoothstep(uPoli, uPoli + 0.07, lat + um * 0.06 + grana * 0.012 + frast * 0.02 + max(e, 0.0) * 0.15);
 
   vec3 N = pw;
   vec3 alb = vec3(0.0);
@@ -377,16 +451,18 @@ vec3 roccioso(vec3 pw, vec3 q, vec3 rd, vec3 luce, float px) {
     emiss = mix(uCol[11], uCol[10], vene * vene) * (0.18 + 2.4 * vene * vene + 0.7 * smoothstep(0.0, 0.3, -e)) * uBrace * respiro;
   } else {
     // rilievo: la pendenza del terreno inclina la normale
-    float eps = max(px * 1.5, 0.002);
+    float eps = max(px * 1.5, 0.0015);
     vec3 t1 = normalize(cross(q, abs(q.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
     vec3 t2 = cross(q, t1);
     float h1 = quota(normalize(q + t1 * eps), n);
     float h2 = quota(normalize(q + t2 * eps), n);
-    N = normalize(q - uRilievo * (t1 * (h1 - h) + t2 * (h2 - h)) / eps) * uRot;
+    // la base con le differenze, il dettaglio con la sua derivata, senza la parte lungo q
+    pendFine -= q * dot(pendFine, q);
+    N = normalize(q - uRilievo * ((t1 * (h1 - h0) + t2 * (h2 - h0)) / eps + 0.7 * pendFine)) * uRot;
 
-    float ee = e + grana * 0.02;
+    float ee = e + grana * 0.02 + 0.012 * frast;
     vec3 c;
-    if (e < 0.0) {
+    if (ec < 0.0) {
       // conche asciutte dei pianeti senza mare
       c = mix(uCol[1], uCol[0], smoothstep(0.02, 0.3, -e));
       c = mix(uCol[2], c, smoothstep(0.0, 0.05, -ee));
@@ -408,10 +484,15 @@ vec3 roccioso(vec3 pw, vec3 q, vec3 rd, vec3 luce, float px) {
       float l1 = 1.0 - abs(rumore(pc + 0.5 * rumore3(pc * 0.6))) * 50.0;
       float l2 = 1.0 - abs(rumore(pc * 2.3 + 7.0)) * 40.0;
       float linee = max(smoothstep(0.0, 1.0, l1), 0.6 * smoothstep(0.0, 1.0, l2));
+      // da vicino crepe più fini e più sottili: entrano quando la loro trama è larga qualche pixel
+      float w3 = smoothstep(2.0, 4.0, 1.0 / (uCrepeFreq * 4.0 * px));
+      float w4 = smoothstep(2.0, 4.0, 1.0 / (uCrepeFreq * 16.0 * px));
+      if (w3 > 0.0) linee = max(linee, 0.5 * w3 * smoothstep(0.0, 1.0, 1.0 - abs(rumore(pc * 4.0 + 3.1)) * 90.0));
+      if (w4 > 0.0) linee = max(linee, 0.4 * w4 * smoothstep(0.0, 1.0, 1.0 - abs(rumore(pc * 16.0 + 5.3)) * 160.0));
       if (uLiquido == 2) emiss += mix(uCol[11], uCol[10], linee * linee) * linee * uBrace * uCrepe * 1.2;
       else c = mix(c, uCol[9], linee * uCrepe * (1.0 - calotta));
     }
-    alb = c * (0.9 + 0.12 * grana);
+    alb = c * (0.9 + 0.12 * grana) * (1.0 + 0.10 * frast);
     spec = uLucido * 0.6 + calotta * 0.15;
     lustro = 40.0;
 
@@ -444,16 +525,19 @@ vec3 roccioso(vec3 pw, vec3 q, vec3 rd, vec3 luce, float px) {
   vec3 col = diretta + emiss;
   if (uNubiSoglia < 5.0) {
     float cl = dot(pw, uSole);
-    vec2 sopra = nubi(uRotNubi * pw, uQual == 0 ? 3 : 5);
+    // avvicinandosi le nuvole prendono fino a tre ottave in più
+    int piu = uQual == 0 ? 0 : int(3.0 * (1.0 - smoothstep(0.08, 1.2, uQuota)) + 0.5);
+    vec2 sopra = nubi(uRotNubi * pw, (uQual == 0 ? 3 : 5) + piu);
     // le nuvole che stanno tra questo punto e la stella: fanno ombra al suolo e alle nuvole vicine
-    vec2 davanti = nubi(uRotNubi * normalize(pw + uSole * (0.011 / max(cl, 0.09))), uQual == 0 ? 3 : 4);
+    vec2 davanti = nubi(uRotNubi * normalize(pw + uSole * (0.011 / max(cl, 0.09))), (uQual == 0 ? 3 : 4) + piu);
     col = diretta * (1.0 - 0.72 * davanti.x) + emiss;
     // una nuvola è più chiara dalla parte della stella e dove è più spessa
     float rilievo = clamp(1.0 + 1.2 * (sopra.y - davanti.y) + 0.4 * (sopra.x - davanti.x), 0.45, 1.3);
     float soleNubi = pow(max((cl + 0.1) / 1.1, 0.0), 0.75);
     vec3 cn = uCol[8] * (luce * soleNubi * (0.66 + 0.34 * sopra.y) * rilievo + uSole2Col * max(dot(pw, uSole2), 0.0));
     cn += emiss * (0.55 - 0.3 * sopra.y); // le luci di sotto (città, mari, lava) passano attenuate dalle nuvole
-    col = mix(col, cn, sopra.x * (0.7 + 0.28 * sopra.y));
+    // scesi sotto le nuvole non si vedono più, ma le loro ombre sul suolo sì
+    col = mix(col, cn, sopra.x * (0.7 + 0.28 * sopra.y) * smoothstep(0.025, 0.09, uQuota));
   }
   if (uAurora > 0.0) col += aurora(q, pw);
   return col;
@@ -624,7 +708,7 @@ void main() {
       vec3 q = uRot * pw;
       vec2 ol = versoSole(pw * 1.0002);
       vec3 luce = uSoleCol * exp(-(uBetaR * ol.x + uBetaM * 1.1 * ol.y)) * ombraAnello(pw);
-      suolo = uTipo == 5 ? gassoso(pw, q, luce) : roccioso(pw, q, rd, luce, pix * tP);
+      suolo = uTipo == 5 ? gassoso(pw, q, luce) : roccioso(pw, q, rd, luce, pix * tP / max(dot(-rd, pw), 0.2));
       fine = mix(a1, tP, copP);
     }
     luceAria = atmosfera(ro, rd, max(a0, 0.0), fine, tras);
