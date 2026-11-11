@@ -124,6 +124,8 @@ Le trappole, in ordine di importanza:
 
 Le **città** e le **strade** sono fatte (10/11, commit `17af0db`): come si costruiscono e si disegnano lo dicono `PROGETTO.md` (2.4-2.6) e «Com'è fatto adesso». Da giudicare a occhio: la forza del rilievo fine da vicino, le vie a quota minima e la notte vista dallo spazio, che ora è fatta di punti, con l'alone delle città grandi, invece che di macchie.
 
+L'11/11 la città vista da vicino è stata rifatta, perché erano «quadrati luminosi» (Stefano): dentro gli isolati ci sono lotti con tetti di toni diversi, giardini con alberi in periferia e le ombre degli edifici; verso il bordo isolati e lotti si diradano a caso e lasciano vedere i campi; di notte ci sono solo lampioni lungo le vie e finestre accese, punti piccoli col buio in mezzo, e le autostrade hanno una fila di lampioni. Ogni particolare che scende sotto un pixel e mezzo lascia il suo colore medio e la sua luce media. Tutto in `citta()` in `js/glsl.js`.
+
 Finita quando: si zooma senza salti dallo spazio alle città su un mondo con civiltà, il dettaglio resta nitido, il suolo sta fermo, le città si vedono di giorno e di notte, e i fotogrammi al secondo a tre altezze sono in `docs/misure/fotogrammi.json` (almeno 30 al secondo a qualità piena sul Mac di sviluppo).
 
 ### Fase 3 — Universo navigabile
@@ -135,9 +137,13 @@ Finita quando: si zooma senza salti dallo spazio alle città su un mondo con civ
 
 Finita quando: da un mondo si vola a un altro scrivendo il nome o toccando la sua stella, e il link ricostruisce la collezione.
 
+**Com'è finita (11/11).** Fatti il posto (1) e il salto (2): scrivendo un nome, o col dado, si salta nel verso giusto, la scheda sparisce e torna all'arrivo col posto sotto la riga (per esempio «Braccio della Lira · 6.400 anni luce dal centro»), e il cielo cambia col posto. La collezione (3) ha le funzioni pronte e collaudate in `js/universo.js` ma non è nella pagina: niente stelle della collezione e niente registro. La vista della galassia (4) non c'è. Stefano ha deciso di chiudere il progetto così com'è.
+
 ### Fase 4 — Documenti e primo giro completo
 
 Misure dei fotogrammi su sei pianeti, `README.md` in inglese e `README.it.md` (con l'immagine dei pianeti fatta da `tools/griglia.html`, nomi comuni o mitologici, e la sezione sui limiti), questa specifica aggiornata.
+
+**Com'è finita (11/11).** Scritti `README.md` e `README.it.md`, brevi, con i crediti e i limiti ma senza l'immagine; aggiornata questa specifica. Le misure su sei pianeti non ci sono.
 
 ### Dopo
 
@@ -160,9 +166,11 @@ Misure dei fotogrammi su sei pianeti, `README.md` in inglese e `README.it.md` (c
 - Zero dipendenze, nessun server, nessuna raccolta di nomi.
 - Niente griglia o galleria nel sito: i mondi stanno in un universo solo.
 - Le strade ci sono, viste dall'alto: non si guida e non si scende al livello della strada.
+- I commit usano il «noreply» di GitHub. Nessun push finché Stefano non dice sì.
+- Il progetto si chiude così com'è (11/11): la fase 3 senza collezione né galassia, la fase 4 senza misure né immagine.
 
 ## Decisioni aperte
 
-- L'ordine delle fasi (proposto in `PROGETTO.md`: 1, 2a, 2b, 3, 4; l'atterraggio dopo).
-- L'indirizzo email dei commit: quello personale o il «noreply» di GitHub. Finché non c'è un push si può ancora cambiare senza conseguenze.
+- La pubblicazione su GitHub e GitHub Pages.
+- Una luce notturna appena accennata, perché il lato notte non sia nero pieno.
 - La collezione si ricorda anche sul dispositivo (`localStorage`, che non esce dal dispositivo) oltre che nel link?

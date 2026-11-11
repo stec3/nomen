@@ -2,11 +2,14 @@
 import { VERTICI, SPAZIO } from './glsl.js';
 import { SOLE, CAMERA } from './nome.js';
 import { costruisci } from './civilta.js';
+import { rotazione, cieloDelPosto } from './universo.js';
 
 const TAN_FOV = 0.25; // tangente di mezzo campo visivo: un teleobiettivo, il pianeta resta tondo
+const TAN_FOV_SALTO = 0.45; // durante il salto il campo si allarga
+const ARRIVO = 40; // da quanto lontano arriva il mondo nuovo, in raggi
 const QUOTA_MIN = 0.006; // la camera più bassa, in raggi: sotto servono coordinate relative alla camera
 const INTERI = new Set(['uTipo', 'uLiquido', 'uLune', 'uQual', 'uCivIndice', 'uCivDati']);
-const FORME = { uSemeI: 'i3', uCol: '3', uLunaCol: '3', uLuna: '4', uTempesta: '4', uCiclone: '4', uCam: 'm', uRot: 'm', uRotNubi: 'm', uCielo: 'm' };
+const FORME = { uSemeI: 'i3', uStelleSeme: 'i3', uCol: '3', uLunaCol: '3', uLuna: '4', uTempesta: '4', uCiclone: '4', uBulbo: '4', uRotta: '3', uCam: 'm', uRot: 'm', uRotNubi: 'm', uCielo: 'm' };
 
 const vett = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const unita = (v) => {
@@ -28,10 +31,14 @@ function ruota(v, k, f) {
   return [0, 1, 2].map((i) => v[i] * c + kx[i] * s + k[i] * kv);
 }
 
-// Rotazione da tre angoli, come matrice per colonne: orienta la via lattea.
-function rotazione([a, b, c]) {
-  const [ca, sa, cb, sb, cc, sc] = [Math.cos(a), Math.sin(a), Math.cos(b), Math.sin(b), Math.cos(c), Math.sin(c)];
-  return [ca * cc + sa * sb * sc, cb * sc, -sa * cc + ca * sb * sc, -ca * sc + sa * sb * cc, cb * cc, sa * sc + ca * sb * cc, sa * cb, -sb, ca * cb];
+// Da a verso b (vettori unitari) di una parte t dell'angolo, lungo il cerchio massimo.
+// Se sono opposti la strada non è unica: si gira attorno a «perno».
+function slerp(a, b, t, perno) {
+  const w = Math.acos(stringi(punto(a, b), -1, 1));
+  if (w < 1e-5 || t <= 0) return t <= 0 ? a : b;
+  let asse = vett(a, b);
+  if (Math.hypot(...asse) < 1e-4) asse = vett(a, perno);
+  return ruota(a, unita(asse), w * Math.min(t, 1));
 }
 
 /** I valori che non cambiano finché il pianeta è lo stesso. Funzione pura: la provano anche i collaudi. */
@@ -103,6 +110,7 @@ export function uniformi(p) {
     uCielo: rotazione(p.cielo.angoli),
     uNebA: p.cielo.tinte[0],
     uNebB: p.cielo.tinte[1],
+    ...cieloDelPosto(p), // il centro della galassia e il seme delle stelle, dal posto del mondo
   };
 }
 
@@ -178,7 +186,14 @@ export function creaMotore(tela) {
   let basi = null; // gli assi del pianeta nello spazio
   let civ = null; // la civiltà costruita del pianeta mostrato
   let civPronta = 1; // la sua dissolvenza
-  let dopo = null; // chi vuole sapere che un fotogramma è stato disegnato (le etichette)
+  const dopo = []; // chi vuole sapere che un fotogramma è stato disegnato (etichette, stelle della collezione)
+  // il salto verso un altro mondo (PROGETTO.md, fase 3): t va da 0 a 1, a metà si cambia pianeta
+  let salto = null;
+  let coda = null; // un salto chiesto mentre se ne fa già uno: parte dopo
+  let fov = TAN_FOV;
+  let lontano = 1; // la distanza della camera moltiplicata: all'arrivo parte da ARRIVO raggi
+  let scie = 0; // quanto le stelle sono scie
+  let lampo = 0;
 
   function prepara(p) {
     pianeta = p;
@@ -224,15 +239,25 @@ export function creaMotore(tela) {
       dir = ruota(dir, basi.a, cam.aggancio);
       destra = ruota(destra, basi.a, cam.aggancio);
     }
-    const avanti = dir.map((c) => -c);
+    let avanti = dir.map((c) => -c);
+    let alto = vett(destra, avanti);
+    if (salto && !salto.cambiato) {
+      // la partenza: la camera gira attorno al pianeta fino a lasciarselo alle spalle,
+      // e intanto smette di guardarlo e si volta verso la direzione vera del mondo di arrivo
+      dir = slerp(dir, salto.rotta, liscio(0, 0.45, salto.t), alto);
+      avanti = slerp(dir.map((c) => -c), salto.rotta, liscio(0, 0.3, salto.t), alto);
+      const dx = vett(avanti, alto);
+      destra = Math.hypot(...dx) > 1e-3 ? unita(dx) : destra;
+      alto = vett(destra, avanti);
+    }
     const morbido = velo * velo * (3 - 2 * velo);
     const aspetto = (tela.clientWidth || tela.width) / (tela.clientHeight || tela.height);
     return {
       dir,
       destra,
       avanti,
-      alto: vett(destra, avanti),
-      dist: (1 + cam.quota) * (1.12 - 0.12 * morbido),
+      alto,
+      dist: (1 + cam.quota) * (1.12 - 0.12 * morbido) * lontano,
       // da vicino il pianeta torna al centro dello schermo: si guarda il suolo sotto il centro
       centro: [0, (aspetto < 1 ? 0.16 : 0.11) * liscio(0.5, 3.0, cam.quota)],
     };
@@ -243,8 +268,8 @@ export function creaMotore(tela) {
     if (!pianeta) return null;
     const v = vista();
     const [l, h] = [tela.clientWidth, tela.clientHeight];
-    const u = ((2 * x - l) / h - v.centro[0]) * TAN_FOV;
-    const w = ((h - 2 * y) / h - v.centro[1]) * TAN_FOV;
+    const u = ((2 * x - l) / h - v.centro[0]) * fov;
+    const w = ((h - 2 * y) / h - v.centro[1]) * fov;
     const rd = unita(somma(somma(v.destra, u, v.alto, w), 1, v.avanti, 1));
     const ro = v.dir.map((c) => c * v.dist);
     const b = punto(ro, rd);
@@ -305,7 +330,11 @@ export function creaMotore(tela) {
     manda('uTempo', tempo);
     manda('uCamPos', vis.dir.map((c) => c * vis.dist));
     manda('uCam', [...vis.destra, ...vis.alto, ...vis.avanti]);
-    manda('uTanFov', TAN_FOV);
+    manda('uTanFov', fov);
+    manda('uSalto', scie);
+    // le scie si allontanano dalla meta all'andata, dal centro dello schermo all'arrivo
+    manda('uRotta', salto && !salto.cambiato ? salto.rotta : vis.avanti);
+    manda('uLampo', lampo);
     manda('uCentro', vis.centro);
     manda('uQuota', vis.dist - 1);
     manda('uEspo', 1.1);
@@ -356,8 +385,9 @@ export function creaMotore(tela) {
     }
     if (!prossimo && velo > 0.3) civPronta = Math.min(1, civPronta + dt / 0.8);
 
+    if (salto) avanzaSalto(dt);
     // dissolvenza: via il pianeta vecchio, dentro il nuovo
-    if (prossimo) {
+    else if (prossimo) {
       velo -= dt / 0.25;
       if (velo <= 0 || !pianeta) {
         velo = 0;
@@ -367,7 +397,7 @@ export function creaMotore(tela) {
     } else if (velo < 1) velo = Math.min(1, velo + dt / 1.1);
 
     // inerzia del trascinamento
-    if (punte.size === 0) {
+    if (punte.size === 0 && !salto) {
       cam.giro += cam.vGiro;
       cam.alzo = stringi(cam.alzo + cam.vAlzo, -1.45, 1.45);
       const frena = 0.93 ** (dt * 60);
@@ -377,7 +407,57 @@ export function creaMotore(tela) {
 
     if (!saltato && !fermo) adatta(dt);
     disegna();
-    if (dopo) dopo();
+    for (const f of dopo) f();
+  }
+
+  function iniziaSalto(p, o) {
+    cam.vGiro = cam.vAlzo = 0;
+    const base = distanzaBase() - 1;
+    salto = { p, rotta: unita(o.rotta), durata: o.durata ?? 2.5, t: 0, q0: cam.quota, qB: Math.max(cam.quota, base), cambiato: false, rivelato: false };
+  }
+
+  function chiudiSalto() {
+    salto = null;
+    fov = TAN_FOV;
+    lontano = 1;
+    scie = lampo = 0;
+    if (coda) {
+      const [p, o] = coda;
+      coda = null;
+      iniziaSalto(p, o);
+    }
+  }
+
+  // Il salto: un quarto per voltarsi verso la meta, poi le scie; a metà il lampo e il cambio di
+  // pianeta; poi il mondo nuovo arriva da lontano frenando, e la scheda si rivela all'85 %.
+  function avanzaSalto(dt) {
+    const s = (salto.t = Math.min(1, salto.t + dt / salto.durata));
+    if (!salto.cambiato) {
+      // da vicino al suolo prima si risale in orbita, poi si parte
+      cam.quota = salto.q0 * (salto.qB / salto.q0) ** liscio(0, 0.35, s);
+      fov = TAN_FOV + (TAN_FOV_SALTO - TAN_FOV) * liscio(0, 0.3, s);
+      scie = liscio(0.08, 0.5, s);
+      lontano = 1 + 0.4 * liscio(0.2, 0.5, s) ** 2;
+      if (s >= 0.5) {
+        prepara(salto.p); // dentro il lampo: la civiltà si costruisce mentre lo schermo è bianco
+        salto.cambiato = true;
+        velo = 1;
+      }
+    }
+    if (salto.cambiato) {
+      const x = (s - 0.5) / 0.5;
+      const d0 = 1 + cam.quota;
+      lontano = ARRIVO / d0 + (1 - ARRIVO / d0) * (1 - (1 - x) ** 3);
+      fov = TAN_FOV_SALTO + (TAN_FOV - TAN_FOV_SALTO) * liscio(0.5, 0.9, s);
+      scie = 1 - liscio(0.5, 0.8, s);
+      if (s >= 0.85 && !salto.rivelato) {
+        salto.rivelato = true;
+        tela.dispatchEvent(new CustomEvent('arrivo', { detail: salto.p }));
+      }
+    }
+    const dal = ((s - 0.5) * salto.durata) / 0.09; // il lampo dura circa un decimo di secondo
+    lampo = Math.exp(-dal * dal);
+    if (s >= 1) chiudiSalto();
   }
 
   // Dove cade sullo schermo un punto del pianeta (coordinate del pianeta, raggio 1): x e y in pixel CSS e
@@ -392,10 +472,27 @@ export function creaMotore(tela) {
     const zc = punto(d, v.avanti);
     if (zc <= 0) return null;
     const [l, h] = [tela.clientWidth, tela.clientHeight];
-    const x = ((punto(d, v.destra) / zc / TAN_FOV + v.centro[0]) * h + l) / 2;
-    const y = (h - (punto(d, v.alto) / zc / TAN_FOV + v.centro[1]) * h) / 2;
+    const x = ((punto(d, v.destra) / zc / fov + v.centro[0]) * h + l) / 2;
+    const y = (h - (punto(d, v.alto) / zc / fov + v.centro[1]) * h) / 2;
     if (x < 0 || y < 0 || x > l || y > h) return null;
-    return { x, y, px: (2 * TAN_FOV * zc) / h };
+    return { x, y, px: (2 * fov * zc) / h };
+  }
+
+  // Dove cade sullo schermo una direzione del cielo (una stella all'infinito): x e y in pixel CSS,
+  // o null se sta dietro la camera, fuori dalla tela o dietro il pianeta.
+  function proiettaCielo(d) {
+    if (!pianeta) return null;
+    const v = vista();
+    const zc = punto(d, v.avanti);
+    if (zc <= 0.05) return null;
+    const ro = v.dir.map((c) => c * v.dist);
+    const b = punto(ro, d);
+    if (b < 0 && b * b - punto(ro, ro) + 1 > 0) return null;
+    const [l, h] = [tela.clientWidth, tela.clientHeight];
+    const x = ((punto(d, v.destra) / zc / fov + v.centro[0]) * h + l) / 2;
+    const y = (h - (punto(d, v.alto) / zc / fov + v.centro[1]) * h) / 2;
+    if (x < 0 || y < 0 || x > l || y > h) return null;
+    return { x, y };
   }
 
   // --- dita e mouse ------------------------------------------------------------
@@ -409,7 +506,7 @@ export function creaMotore(tela) {
   });
   tela.addEventListener('pointermove', (e) => {
     const prima = punte.get(e.pointerId);
-    if (!prima) return;
+    if (!prima || salto) return;
     punte.set(e.pointerId, [e.clientX, e.clientY]);
     if (punte.size === 1) {
       // il pianeta segue il dito: la camera gli gira attorno dalla parte opposta,
@@ -438,6 +535,7 @@ export function creaMotore(tela) {
     'wheel',
     (e) => {
       e.preventDefault();
+      if (salto) return;
       const r = tela.getBoundingClientRect();
       // rotella a righe o a pagine (Firefox) come a pixel; il pizzico del trackpad arriva con ctrlKey
       const passi = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
@@ -452,13 +550,23 @@ export function creaMotore(tela) {
   });
 
   return {
-    /** Mostra un pianeta, con una dissolvenza se ce n'era già uno. */
-    mostra(p) {
-      prossimo = p;
+    /**
+     * Mostra un pianeta. Con o.rotta (la direzione vera del mondo nel cielo di quello di adesso) e
+     * o.durata ci si arriva col salto; senza, con una dissolvenza.
+     */
+    mostra(p, o = {}) {
+      if (!o.rotta || !pianeta || prossimo) prossimo = p;
+      else if (salto) coda = [p, o];
+      else iniziaSalto(p, o);
     },
     /** Per collaudi e misure: ferma il tempo, fissa qualità, risoluzione o camera. */
     imposta(o = {}) {
       // prima il cambio di pianeta, che rimette la camera al suo posto; poi il resto
+      if (o.subito && salto) {
+        if (!salto.cambiato) prepara(salto.p);
+        coda = null;
+        chiudiSalto();
+      }
       if (o.subito && prossimo) {
         prepara(prossimo);
         prossimo = null;
@@ -474,7 +582,7 @@ export function creaMotore(tela) {
       if (o.quota !== undefined) cam.quota = o.quota;
       if (o.aggancio !== undefined) cam.aggancio = o.aggancio;
     },
-    stato: () => ({ larghezza: tela.width, altezza: tela.height, scala, qualita, mediaMs, tempo, quota: cam.quota }),
+    stato: () => ({ larghezza: tela.width, altezza: tela.height, scala, qualita, mediaMs, tempo, quota: cam.quota, salto: salto ? salto.t : null }),
     /** Tempo vero di un fotogramma: si disegna e si aspetta la scheda grafica, più volte. */
     misura(fotogrammi = 30) {
       const px = new Uint8Array(4);
@@ -494,11 +602,12 @@ export function creaMotore(tela) {
     /** Il punto del suolo (nello spazio, raggio 1) sotto un pixel della tela, o null: per collaudi ed etichette. */
     suoloSotto,
     proietta,
+    proiettaCielo,
     /** La civiltà costruita del pianeta mostrato (città, strade, tabelle, misure), o null. */
     civilta: () => civ,
     /** Una funzione da chiamare dopo ogni fotogramma disegnato. */
     ogniFotogramma(f) {
-      dopo = f;
+      dopo.push(f);
     },
   };
 }

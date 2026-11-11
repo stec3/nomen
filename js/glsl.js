@@ -37,6 +37,11 @@ uniform float uNebForza;  // via lattea: 1 di norma, molto di più col cielo di 
 uniform mat3 uCielo;      // orientamento della via lattea
 uniform vec3 uNebA;
 uniform vec3 uNebB;
+uniform vec4 uBulbo;      // verso il centro della galassia (coordinate della galassia) e distanza, in migliaia di anni luce
+uniform ivec3 uStelleSeme; // il seme delle stelle: cambia viaggiando, uguale per i mondi vicini
+uniform float uSalto;     // 0 fermi; fino a 1 durante il salto, quando le stelle sono scie
+uniform vec3 uRotta;      // la direzione del salto, da cui le scie si allontanano
+uniform float uLampo;     // il lampo a metà del salto (0-1)
 
 // pianeta
 uniform int uTipo;        // 0 terrestre, 1 oceanico, 2 desertico, 3 ghiacciato, 4 lavico, 5 gassoso
@@ -396,9 +401,12 @@ vec2 nubi(vec3 q, int n) {
   }
   vec3 p = a * uNubiScala + vec3(4.1, 9.3, 2.7);
   vec3 w = rumore3(p * 0.5 + vec3(0.0, uTempo * 0.005, 0.0));
-  p += uNubiVort * w;                                                    // i venti le tirano in filamenti
+  // i venti le tirano in filamenti. Lo spostamento resta piccolo rispetto a quanto cambia w (rumore a
+  // valori, pendenza fino a 1,5 qui): più forte, in certi punti il disegno si ripiegava e le nuvole
+  // venivano tirate in strisce (visto l'11/11)
+  p += 0.5 * uNubiVort * w;
   float sistemi = fbm(p * 0.42 + 13.0, 3, 0.5) * 3.0;                    // dove sta il brutto tempo
-  float trama = fbm(p * 1.7 + 0.5 * w + uTempo * 0.004, n, 0.62) * 3.0;  // il disegno fine
+  float trama = fbm(p * 1.7 + 0.15 * w + uTempo * 0.004, n, 0.62) * 3.0; // il disegno fine
   float d = 0.72 * sistemi + 0.68 * trama + 0.06 * cos(q.y * 9.0) + 0.5 * nucleo - 1.5 * occhio;
   return vec2(smoothstep(uNubiSoglia, uNubiSoglia + 0.18, d), smoothstep(uNubiSoglia + 0.1, uNubiSoglia + 0.75, d));
 }
@@ -463,19 +471,116 @@ vec2 aPezzi(vec2 g, int seme, float forza) {
   return cq + vec2(d.x * cos(r) - d.y * sin(r), d.x * sin(r) + d.y * cos(r));
 }
 
-// Il disegno di una città dall'alto, con g contato in isolati e pi = un pixel in isolati.
-// x = via (0-1), y = tono dell'isolato (±0,25), z = parco (0 o 1), w = quanto il disegno si distingue;
-// quartiere = quanto è fitto il suo quartiere (0-1), che si vede anche quando gli isolati non si distinguono.
-vec4 vie(vec2 g, int seme, float pi, out float quartiere) {
-  quartiere = mix(0.5, h33(ivec3(ivec2(floor(g / 8.0)), seme + 4243)).x, smoothstep(1.0, 2.5, 8.0 / pi));
+// La stella nel piano di una città (le stesse tangenti di locale()): xy la direzione, z l'altezza sull'orizzonte.
+vec3 soleLocale(vec3 c, float angolo) {
+  vec3 s = uRot * uSole;
+  vec3 t1 = normalize(cross(c, abs(c.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+  vec3 t2 = cross(c, t1);
+  vec2 l = vec2(dot(s, t1), dot(s, t2));
+  float co = cos(angolo), si = sin(angolo);
+  return vec3(co * l.x + si * l.y, co * l.y - si * l.x, dot(s, c));
+}
+
+// Una città dall'alto, con g contato in isolati e pi = un pixel in isolati. dens = quanto il posto è costruito
+// (0-1): verso il bordo gli isolati si diradano a caso e lasciano il suolo. cen = quanto si è al centro.
+// Da vicino: vie e viali, lotti con tetti di toni diversi, giardini con alberi in periferia, ombre degli edifici;
+// di notte lampioni e finestre accese, punti piccoli col buio in mezzo. Ogni particolare che scende sotto
+// un pixel e mezzo lascia il suo colore medio e la sua luce media, così scendendo niente salta.
+// Restituisce il colore; copre = quanto il punto è città (il resto mostra il suolo), luce = la luce della notte.
+vec3 citta(vec2 g, int seme, float pi, float dens, float cen, float rete, vec3 suolo, vec3 sole, out float copre, out vec3 luce) {
+  float quartiere = mix(0.5, h33(ivec3(ivec2(floor(g / 8.0)), seme + 4243)).x, smoothstep(1.0, 2.5, 8.0 / pi));
+  vec3 medio = mix(vec3(0.485, 0.47, 0.45), suolo, 0.15) * (0.86 - 0.13 * cen) * (1.0 + 0.12 * rete) * (0.9 + 0.2 * quartiere);
+  float fitto = (0.3 + 0.25 * cen) * (0.45 + 1.1 * quartiere) * (1.0 + 0.35 * rete);
+  copre = dens;
+  luce = uCol[10] * pow(dens, 1.5) * fitto;
+  float wv = smoothstep(1.5, 3.0, 1.0 / pi);   // gli isolati si distinguono
+  if (wv <= 0.0) return medio;
+
   g = aPezzi(g, seme + 7001, 0.24);
-  vec3 h = h33(ivec3(ivec2(floor(g)), seme));
-  vec2 dv = abs(g - floor(g + 0.5));              // dalla via più vicina
-  vec2 dl = abs(g - 4.0 * floor(g / 4.0 + 0.5));  // dal viale, uno ogni quattro isolati
+  vec2 c = floor(g), f = g - c;
+  vec3 h = h33(ivec3(ivec2(c), seme));         // tono, parco, presenza
   float a = 0.5 * pi;
-  vec2 via = 1.0 - smoothstep(vec2(0.06 - a), vec2(0.06 + a), dv);
-  vec2 viale = 1.0 - smoothstep(vec2(0.14 - a), vec2(0.14 + a), dl);
-  return vec4(max(max(via.x, via.y), max(viale.x, viale.y)), (h.x - 0.5) * 0.5, step(h.y, 0.07), smoothstep(1.5, 3.0, 1.0 / pi));
+  // le vie lungo le linee intere, un viale ogni quattro
+  vec2 lin = floor(g + 0.5), dv = abs(g - lin);
+  vec2 viale = step(mod(lin, 4.0), vec2(0.5));
+  vec2 mezza = mix(vec2(0.06), vec2(0.14), viale);
+  vec2 sv = 1.0 - smoothstep(mezza - a, mezza + a, dv);
+  float via = max(sv.x, sv.y);
+  // verso il bordo si diradano gli isolati e, dentro quelli che restano, i lotti (ognuno con probabilità
+  // √dens, insieme dens); una via c'è se almeno uno dei due isolati che la guardano c'è
+  float rd = sqrt(dens);
+  float pres = step(h.z, rd);
+  vec2 dn = dv.x < dv.y ? vec2(f.x < 0.5 ? -1.0 : 1.0, 0.0) : vec2(0.0, f.y < 0.5 ? -1.0 : 1.0);
+  float viaC = max(pres, step(h33(ivec3(ivec2(c + dn), seme)).z, rd));
+  float parco = step(h.y, 0.07);
+
+  // i lotti: pochi e grandi al centro, tante case piccole in periferia
+  vec3 h2 = h33(ivec3(ivec2(c), seme + 1913));
+  vec2 n = clamp(floor(mix(1.0, 3.0, 1.0 - cen) + 2.0 * h2.xy), 1.0, 4.0);
+  vec2 fi = clamp((f - 0.06) / 0.88, 0.0, 0.9999);
+  vec2 li = floor(fi * n), lf = fi * n - li;
+  ivec3 il = ivec3(ivec2(c) * 4 + ivec2(li), seme);
+  vec3 hl = h33(il + ivec3(0, 0, 6007)), hm = h33(il + ivec3(0, 0, 8101));
+  float marg = mix(0.2, 0.05, cen);
+  vec2 lo = marg * (0.5 + hm.xy), hi = 1.0 - marg * (0.5 + hm.yz);
+  vec2 aa = 0.5 * pi * n / 0.88;               // mezzo pixel, in lotti
+  vec2 e2 = smoothstep(lo - aa, lo + aa, lf) * (1.0 - smoothstep(hi - aa, hi + aa, lf));
+  float edificio = e2.x * e2.y * (1.0 - parco);
+  float wl = smoothstep(1.5, 3.0, 0.88 / (max(n.x, n.y) * pi));   // i lotti si distinguono
+  float fp = (1.0 - 2.0 * marg) * (1.0 - 2.0 * marg) * (1.0 - parco);
+  float lottoC = mix(rd, step(h33(il + ivec3(0, 0, 3203)).x, rd), wl);   // il lotto è costruito
+  lottoC = max(lottoC, parco) * pres;
+  edificio *= lottoC;
+
+  // l'ombra sul lotto: andando dal punto verso la stella si incontra l'edificio? Al centro sono più alti
+  float H = mix(0.02 + 0.04 * hl.z, 0.08 + 0.3 * hl.z * hl.z, cen);
+  vec2 V = sole.xy / max(sole.z, 0.15) * H * n / 0.88;
+  vec2 inv = 1.0 / (V + 1e-6 * sign(V) + vec2(1e-7));
+  vec2 t0 = (lo - lf) * inv, t1 = (hi - lf) * inv;
+  vec2 tn = min(t0, t1), tx = max(t0, t1);
+  float ombra = step(max(max(tn.x, tn.y), 0.0), min(min(tx.x, tx.y), 1.0)) * (1.0 - edificio) * (1.0 - parco) * step(0.0, sole.z);
+
+  // le chiome degli alberi, nei parchi e nei giardini
+  vec2 ga = g * 6.0, ca = floor(ga);
+  vec3 ha = h33(ivec3(ivec2(ca), seme + 99));
+  float chioma = (1.0 - smoothstep(0.3 - 3.0 * a, 0.3 + 3.0 * a, length(ga - ca - 0.3 - 0.4 * ha.yz))) * step(0.45, ha.x);
+  chioma *= smoothstep(1.5, 3.0, 1.0 / (6.0 * pi));
+
+  vec3 verde = mix(uCol[3], uCol[4], 0.35 + 0.4 * hm.z);
+  vec3 giardino = mix(verde, vec3(0.47, 0.46, 0.44), cen) * (1.0 - 0.35 * chioma * (1.0 - cen)); // al centro cortili
+  vec3 tetto = hl.x < 0.35 ? vec3(0.6, 0.59, 0.56) : hl.x < 0.6 ? vec3(0.36, 0.36, 0.37) : hl.x < 0.8 ? vec3(0.56, 0.37, 0.29) : vec3(0.72, 0.69, 0.62);
+  tetto = mix(tetto * (0.85 + 0.3 * hl.y), suolo, 0.12);
+  vec3 lotto = mix(giardino * (1.0 - 0.5 * ombra), tetto, edificio);
+  lotto = mix(mix(giardino, vec3(0.556, 0.509, 0.471), fp) * (0.92 + 0.16 * h.x), lotto, wl);
+  vec3 isol = parco > 0.5 ? mix(uCol[4], uCol[3], 0.35) * (1.0 - 0.3 * chioma) : lotto;
+  vec3 asfalto = mix(vec3(0.19, 0.19, 0.2), vec3(0.26, 0.26, 0.26), max(viale.x * sv.x, viale.y * sv.y));
+  vec3 col = mix(isol, asfalto, via);
+  float copreDet = mix(lottoC, viaC, via);
+
+  // la notte: lampioni ogni mezzo isolato lungo le vie (ogni quarto sui viali) e finestre accese negli edifici
+  const float R0 = 0.035, RF = 0.03;           // il raggio di un punto di luce, in isolati
+  float rl = max(R0, 0.6 * pi), rf = max(RF, 0.6 * pi);
+  vec2 passo = mix(vec2(0.5), vec2(0.25), viale);
+  vec2 pv = vec2(lin.x, floor(g.y / passo.x + 0.5) * passo.x), ph = vec2(floor(g.x / passo.y + 0.5) * passo.y, lin.y);
+  vec3 hv = h33(ivec3(ivec2(floor(pv * 4.0 + 0.5)), seme + 401)), hh = h33(ivec3(ivec2(floor(ph * 4.0 + 0.5)), seme + 401));
+  float lamp = (exp(-dot(g - pv, g - pv) / (rl * rl)) * step(hv.x, 0.85) * (0.6 + 0.4 * hv.y)
+              + exp(-dot(g - ph, g - ph) / (rl * rl)) * step(hh.x, 0.85) * (0.6 + 0.4 * hh.y)) * (R0 * R0) / (rl * rl);
+  const float LAMPI = 5.0 * 0.85 * 0.8 * PI * R0 * R0;   // la loro luce media per isolato
+  lamp = mix(via * LAMPI / 0.26, lamp, smoothstep(1.5, 3.0, 0.5 / pi)) * viaC;
+  vec2 cw = floor(g * 4.0);
+  vec3 hf = h33(ivec3(ivec2(cw), seme + 9203));
+  vec2 pf = (cw + 0.25 + 0.5 * hf.yz) / 4.0;
+  float acc = mix(0.15, 0.65, cen) * (0.5 + 0.5 * dens);  // le finestre accese, di più al centro
+  float ed = mix(fp * lottoC, edificio, wl);
+  float fin = exp(-dot(g - pf, g - pf) / (rf * rf)) * (RF * RF) / (rf * rf) * step(hf.x, acc) * (0.5 + hf.x / max(acc, 0.01));
+  fin = mix(16.0 * acc * PI * RF * RF, fin, smoothstep(1.5, 3.0, 0.25 / pi)) * ed;
+  // in media la stessa luce di lontano: sono punti accesi forte con il buio in mezzo
+  float media = LAMPI + 16.0 * acc * PI * RF * RF * fp;
+  vec3 luceDet = (uCol[10] * lamp + mix(uCol[10], vec3(1.0, 0.9, 0.75), 0.35) * fin) * (0.96 * fitto / media) + uCol[10] * 0.04 * fitto * copreDet;
+
+  copre = mix(dens, copreDet, wv);
+  luce = mix(luce, luceDet, wv);
+  return mix(medio, col, wv);
 }
 
 // I campi attorno a una città: una scacchiera girata a pezzi, ogni campo col suo colore tra pianura e
@@ -505,6 +610,7 @@ vec2 civTerra(vec3 q, float e, float px, float calotta, float notte, inout vec3 
   float zc = 0.0;                           // la zona dei campi, e la sua città
   vec4 cmp = vec4(0.0), cmpB = vec4(0.0);
   float vD = 1e9, vR = 0.0;                 // la città più vicina, per le case lungo le strade
+  vec4 vA = vec4(0.0), vB = vec4(0.0);
   float puntoAlb = 0.0, puntoLuce = 0.0;    // le città più piccole di un pixel e mezzo: un punto
   float strada = 0.0, chiara = 0.0, filo = 0.0, striscia = 0.0;
   for (int k = 0; k < 20; k++) {
@@ -539,8 +645,10 @@ vec2 civTerra(vec3 q, float e, float px, float calotta, float notte, inout vec3 
         if (d / Rb < vD) {
           vD = d / Rb;
           vR = Rb;
+          vA = a;
+          vB = b;
         }
-        float z = smoothstep(1.2 * Rb, 1.7 * Rb, d) * (1.0 - smoothstep(3.3 * Rb, 4.0 * Rb, d)) * (1.0 - pf);
+        float z = smoothstep(0.7 * Rb, 1.2 * Rb, d) * (1.0 - smoothstep(3.3 * Rb, 4.0 * Rb, d)) * (1.0 - pf);
         if (z > zc) {
           zc = z;
           cmp = a;
@@ -565,10 +673,12 @@ vec2 civTerra(vec3 q, float e, float px, float calotta, float notte, inout vec3 
         chiara = step(2.5, b.w);
       }
       if (b.w > 2.5) {
-        // lungo le autostrade un filo di luci, a punti quando si distinguono
-        float lungo = t * length(b.xyz - a.xyz) / (8.0 * lw);
-        float punti = mix(0.6, 1.0 - smoothstep(0.15, 0.3, abs(fract(lungo) - 0.5)), smoothstep(1.0, 3.0, 8.0 * lw / px));
-        filo = max(filo, cop * punti);
+        // lungo le autostrade una fila di lampioni ogni 0,3 isolati; da lontano la stessa luce è un filo
+        const float PASSO = 0.3 * ISOLATO, RL = 0.04 * ISOLATO;
+        float ds = (fract(t * length(b.xyz - a.xyz) / PASSO) - 0.5) * PASSO;
+        float rl = max(RL, 0.6 * px);
+        float lampione = exp(-(ds * ds + d * d) / (rl * rl)) * (RL * RL) / (rl * rl) * 0.6 * lw * PASSO / (PI * RL * RL);
+        filo = max(filo, mix(cop * 0.6, lampione, smoothstep(1.5, 3.0, PASSO / px)));
       }
     }
   }
@@ -593,26 +703,22 @@ vec2 civTerra(vec3 q, float e, float px, float calotta, float notte, inout vec3 
       centro = 0.0;
     }
   }
-  float luceCitta = 0.0;
+  vec3 luceCitta = vec3(0.0);
   costr = max(costr, striscia * 0.7);
   if (costr > 0.0) {
-    float quartiere;
-    vec4 v = vie(locale(q, dom.xyz, domB.y) / ISOLATO, int(domB.z), px / ISOLATO, quartiere);
-    vec3 grigio = mix(vec3(0.42, 0.41, 0.40), vec3(0.55, 0.53, 0.50), 0.5 + 2.0 * v.y) * (1.0 + v.y) * (1.0 - 0.2 * centro);
-    vec3 casa = mix(grigio, alb, 0.15);   // tinto dal suolo
-    vec3 disegno = mix(v.z > 0.5 ? mix(uCol[4], uCol[3], 0.35) : casa, vec3(0.19, 0.19, 0.2), v.x);
-    vec3 medio = mix(vec3(0.485, 0.47, 0.45), alb, 0.15) * (0.86 - 0.13 * centro) * (1.0 + 0.12 * rete) * (0.9 + 0.2 * quartiere);
-    alb = mix(alb, mix(medio, disegno, v.w), costr * terra);
-    // di notte le vie sono le più accese, i parchi bui
-    // in media quanto da lontano, così scendendo la luce non cambia: vie accese, isolati fiochi
-    float fitto = (0.3 + 0.25 * centro) * (0.45 + 1.1 * quartiere) * (1.0 + 0.35 * rete);
-    float accese = v.z > 0.5 ? 0.02 : mix(0.12 * (1.0 + 0.8 * v.y), 1.4, v.x);
-    luceCitta = pow(costr, 1.5) * mix(fitto, accese * fitto / 0.35, v.w);
+    // la striscia di case oltre il bordo prende la griglia della città più vicina
+    if (dom.w == 0.0) {
+      dom = vA;
+      domB = vB;
+    }
+    float copre;
+    vec3 colCitta = citta(locale(q, dom.xyz, domB.y) / ISOLATO, int(domB.z), px / ISOLATO, costr, centro, rete, alb, soleLocale(dom.xyz, domB.y), copre, luceCitta);
+    alb = mix(alb, colCitta, copre * terra);
   }
   alb = mix(alb, vec3(0.45, 0.44, 0.42), puntoAlb * terra);
   alb = mix(alb, mix(vec3(0.52, 0.52, 0.5), vec3(0.68, 0.67, 0.64), chiara), strada * terra);
-  // la notte: da lontano è fatta di punti, scendendo diventano reticoli; i campi restano bui
-  emiss += uCol[10] * (luceCitta * 1.6 + puntoLuce + filo * 1.2) * notte * terra;
+  // la notte: da lontano è fatta di punti, scendendo diventano lampioni e finestre; i campi restano bui
+  emiss += (luceCitta * 1.6 + uCol[10] * (puntoLuce + filo * 1.2)) * notte * terra;
   return vec2(costr, zc) * terra;
 }
 
@@ -812,33 +918,79 @@ vec3 gassoso(vec3 pw, vec3 q, vec3 luce) {
 // Il cielo: stelle, via lattea, la stella del pianeta. E le lune.
 // ---------------------------------------------------------------------------
 const CIELO = `
+// Una stella dello strato k nella cella fl (coordinate della galassia per fitte): dove sta e com'è.
+bool stella(int k, vec3 fl, float fitte, out vec3 dir, out float lum, out vec3 tinta) {
+  ivec3 i = ivec3(fl) + ivec3(k * 131);
+  vec3 centro = normalize(fl + 0.2 + 0.6 * h33(i)) * fitte;
+  if (any(notEqual(floor(centro), fl))) return false;
+  vec3 h2 = h33(i + ivec3(17, 59, 83));
+  dir = centro / fitte;
+  lum = (k == 0 ? 0.02 : 0.007) * pow(max(h2.x, 0.0004), -0.667);
+  tinta = mix(vec3(1.0), mix(vec3(1.0, 0.7, 0.5), vec3(0.6, 0.75, 1.0), h2.y), 0.55);
+  return true;
+}
+
+// Le stelle nella direzione g: come nel cielo vero, tantissime deboli e pochissime forti.
+// Durante il salto ogni stella è una scia che si allontana dalla rotta: si cercano, andando
+// all'indietro verso la rotta, le celle da cui può partire una scia che passa di qui.
+vec3 stelle(vec3 g, float pix, float banda) {
+  vec3 c = vec3(0.0);
+  float lungo = uSalto * 0.6;
+  vec3 rotta = uCielo * uRotta;
+  for (int k = 0; k < 2; k++) {
+    float fitte = k == 0 ? 56.0 : 140.0;
+    vec3 dir, tinta;
+    float lum;
+    if (lungo <= 0.0) {
+      if (!stella(k, floor(g * fitte), fitte, dir, lum, tinta)) continue;
+      lum *= 0.55 + 0.9 * banda;
+      float raggio = pix * (1.0 + 0.6 * smoothstep(0.1, 1.2, lum));
+      float d = length(g - dir);
+      c += tinta * min(lum, 2.5) * exp(-d * d / (raggio * raggio));
+      continue;
+    }
+    vec3 inizio = normalize(g - (g - rotta * dot(g, rotta)) * lungo);
+    int passi = int(clamp(ceil(length(g - inizio) * fitte * 1.5), 1.0, k == 0 ? 14.0 : 8.0));
+    vec3 prima = vec3(1e9);
+    for (int s = 0; s <= passi; s++) {
+      vec3 fl = floor(normalize(mix(inizio, g, float(s) / float(passi))) * fitte);
+      if (fl == prima) continue;
+      prima = fl;
+      if (!stella(k, fl, fitte, dir, lum, tinta)) continue;
+      vec3 ab = normalize(dir + (dir - rotta * dot(dir, rotta)) * lungo) - dir; // la scia, dalla stella in fuori
+      float t = clamp(dot(g - dir, ab) / max(dot(ab, ab), 1e-12), 0.0, 1.0);
+      float d = length(g - dir - ab * t);
+      float raggio = pix * 1.3;
+      // la luce si spalma sulla scia: più è lunga, più è tenue in ogni punto
+      float spalma = mix(raggio / (raggio + 0.25 * length(ab)), 1.0, 0.3);
+      c += tinta * min(lum, 2.5) * (0.55 + 0.9 * banda) * spalma * exp(-d * d / (raggio * raggio));
+    }
+  }
+  return c;
+}
+
 vec3 cielo(vec3 rd, float pix) {
   vec3 g = uCielo * rd;                       // coordinate della galassia: g.y è la distanza dal suo piano
   float banda = exp(-g.y * g.y * (uNebForza > 1.0 ? 2.25 : 9.0)); // col cielo di nebulosa la fascia è larga il doppio
-  vec3 c = vec3(0.0);
+  vec3 c = stelle(g, pix, banda);
 
-  // stelle: come nel cielo vero, tantissime deboli e pochissime forti
-  for (int k = 0; k < 2; k++) {
-    float fitte = k == 0 ? 56.0 : 140.0;
-    vec3 p = rd * fitte;
-    vec3 fl = floor(p);
-    ivec3 i = ivec3(fl) + ivec3(k * 131);
-    vec3 h = h33(i);
-    vec3 centro = normalize(fl + 0.2 + 0.6 * h) * fitte;
-    if (any(notEqual(floor(centro), fl))) continue;
-    vec3 h2 = h33(i + ivec3(17, 59, 83));
-    float lum = (k == 0 ? 0.02 : 0.007) * pow(max(h2.x, 0.0004), -0.667) * (0.55 + 0.9 * banda);
-    float raggio = pix * (1.0 + 0.6 * smoothstep(0.1, 1.2, lum));
-    float d = length(p - centro) / fitte;
-    vec3 tinta = mix(vec3(1.0), mix(vec3(1.0, 0.7, 0.5), vec3(0.6, 0.75, 1.0), h2.y), 0.55);
-    c += tinta * min(lum, 2.5) * exp(-d * d / (raggio * raggio));
-  }
+  // il centro della galassia: un bulbo di luce calda, grande e forte quanto più ci si è vicini
+  float r = max(uBulbo.w, 1.0);
+  float vc = dot(g, uBulbo.xyz);
+  float largo = 1.4 / r;                      // il suo raggio apparente, in radianti
+  float bulbo = exp(-2.0 * (1.0 - vc) / (largo * largo)) * 0.16 / pow(r, 0.8);
+  // la fascia è più chiara dalla parte del centro e più spenta dalla parte opposta
+  float fascia = banda * (0.6 + 0.8 * (0.5 + 0.5 * vc) * (0.6 + 6.0 / r));
+  vec3 caldo = mix(vec3(1.0, 0.82, 0.6), mix(uNebA, uNebB, 0.5), 0.3);
 
-  // via lattea: una fascia di luce con le sue nubi scure
+  // via lattea: una fascia di luce con le sue nubi scure, che tagliano anche il bulbo
   if (uQual > 0) {
     float n = fbm(g * 3.0 + 5.0, 4, 0.55) * 3.0;
     float polvere = smoothstep(-0.1, 0.5, fbm(g * 5.0 + 40.0, 3, 0.5) * 3.0 + (1.0 - abs(g.y) * 6.0) * 0.3);
-    c += mix(uNebA, uNebB, 0.5 + 0.5 * n) * banda * (0.5 + 0.8 * max(n + 0.3, 0.0)) * (1.0 - 0.6 * polvere * banda) * 0.022 * uNebForza;
+    c += mix(uNebA, uNebB, 0.5 + 0.5 * n) * fascia * (0.5 + 0.8 * max(n + 0.3, 0.0)) * (1.0 - 0.6 * polvere * banda) * 0.022 * uNebForza;
+    c += caldo * bulbo * (0.75 + 0.5 * max(n, 0.0)) * (1.0 - 0.7 * polvere * banda);
+  } else {
+    c += caldo * bulbo * 0.8;
   }
 
   // la stella del pianeta, col suo alone
@@ -876,7 +1028,7 @@ void main() {
   vec3 rd = normalize(uCam * vec3(uv * uTanFov, 1.0));
   float pix = 2.0 * uTanFov / uRis.y;         // quanto è largo un pixel, in radianti
 
-  gSeme = ivec3(0); // il cielo non dipende dal pianeta
+  gSeme = uStelleSeme; // il cielo non dipende dal pianeta ma dal posto nella galassia
   vec3 col = cielo(rd, pix);
   gSeme = uSemeI;
 
@@ -956,6 +1108,7 @@ void main() {
   col *= uEspo * uVelo;
   col = (col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14);
   col = pow(clamp(col, 0.0, 1.0), vec3(1.0 / 2.2));
+  col = mix(col, vec3(1.0, 0.97, 0.92), uLampo);
   // un velo di grana rompe le bande nei gradienti scuri
   col += (h11(int(gl_FragCoord.x) + int(gl_FragCoord.y) * 8191) - 0.5) / 255.0;
   esito = vec4(col, 1.0);

@@ -3,6 +3,7 @@ import { pianeta, descrivi, ripulisci } from './nome.js';
 import { nomeACaso } from './nomi.js';
 import { creaMotore } from './motore.js';
 import { creaEtichette } from './etichette.js';
+import { verso, durata, distanza } from './universo.js';
 
 const italiano = (navigator.language || 'en').toLowerCase().startsWith('it');
 const lingua = italiano ? 'it' : 'en';
@@ -97,6 +98,7 @@ function blocco(titolo, ...figli) {
 function riempi(p, d) {
   $('nome').textContent = p.nome;
   $('riga').textContent = d.riga;
+  $('posto').textContent = d.posto;
 
   const livello = crea('span', 'livello', d.livello.nome);
   livello.dataset.livello = String(d.livello.indice);
@@ -157,18 +159,34 @@ function riempi(p, d) {
   $('foglio').replaceChildren(...foglio);
 }
 
-function mostra(nome) {
-  const p = pianeta(nome || PREDEFINITO);
+// La scheda di un pianeta: riappare insieme a lui, il livello per ultimo.
+function presenta(p) {
   const d = descrivi(p, lingua);
   riempi(p, d);
   $('tela').setAttribute('aria-label', `${T.pianetaDi} ${p.nome}: ${d.riga}, ${d.livello.nome}`);
-  document.title = nome ? `${p.nome} — Nomen` : 'Nomen';
-  // la scheda sparisce e riappare insieme al pianeta; il livello arriva per ultimo
   const scheda = $('scheda');
-  scheda.classList.remove('entra');
+  scheda.classList.remove('entra', 'via');
   void scheda.offsetWidth;
   scheda.classList.add('entra');
-  motore.mostra(p);
+}
+
+let attuale = null; // il mondo mostrato, o quello verso cui si sta saltando
+
+// Al primo mondo si arriva con una dissolvenza; dagli altri si salta, partendo nella direzione in cui
+// il mondo nuovo si vede davvero nel cielo di quello di adesso. La scheda torna all'arrivo.
+function mostra(nome) {
+  const p = pianeta(nome || PREDEFINITO);
+  document.title = nome ? `${p.nome} — Nomen` : 'Nomen';
+  if (attuale && attuale.nome !== p.nome) {
+    // tolta l'animazione d'entrata, che terrebbe le scritte accese
+    $('scheda').classList.remove('entra');
+    $('scheda').classList.add('via');
+    motore.mostra(p, { rotta: verso(attuale, p), durata: durata(distanza(attuale, p)) });
+  } else {
+    presenta(p);
+    motore.mostra(p);
+  }
+  attuale = p;
 }
 
 function vaiA(nome) {
@@ -196,6 +214,7 @@ if (!motore) {
     vaiA(nome);
   });
   window.addEventListener('hashchange', () => mostra(nomeNellIndirizzo()));
+  $('tela').addEventListener('arrivo', (e) => presenta(e.detail));
   $('tela').addEventListener('trascinato', () => $('aiuto').classList.add('via'), { once: true });
   $('copia').addEventListener('click', async () => {
     try {

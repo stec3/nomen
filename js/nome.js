@@ -283,6 +283,20 @@ const DENSITA = { terrestre: [5.0, 5.8], oceanico: [3.8, 5.0], desertico: [3.6, 
 // Calotte dei mondi temperati: da «a» quando fa più freddo a «b» quando fa più caldo.
 const CALOTTE = { terrestre: [0.64, 0.97], oceanico: [0.7, 0.98], desertico: [0.85, 0.995] };
 
+// Il posto nella galassia (PROGETTO.md, fase 3), in migliaia di anni luce: quattro bracci a spirale
+// logaritmica. Non decide nessuna soglia, quindi può usare logaritmi e potenze.
+const PASSO_SPIRALE = 3.2; // l'inverso della tangente dell'apertura dei bracci, circa 17°
+function posto(d) {
+  const braccio = d.scegli('posto.braccio', [1, 1, 1, 1]);
+  const distanza = 2 + 24 * d.u('posto.distanza') ** 0.7;
+  // lungo il braccio l'angolo cresce col logaritmo della distanza; lo scarto è a campana, più fitto al centro del braccio
+  const scarto = (d.u('posto.scarto') + d.u('posto.scarto2') - 1) * 0.32;
+  const angolo = (braccio * Math.PI) / 2 + Math.log(distanza / 2) * PASSO_SPIRALE + scarto;
+  // il disco è sottile, un po' più spesso verso il centro
+  const altezza = (d.u('posto.altezza') - 0.5) * 0.5 * (0.3 + Math.exp(-distanza / 8));
+  return { braccio, distanza, punto: [distanza * Math.cos(angolo), altezza, distanza * Math.sin(angolo)] };
+}
+
 /** Tutto quello che c'è da sapere sul pianeta di un nome. */
 export function pianeta(nomeGrezzo) {
   const nome = ripulisci(nomeGrezzo);
@@ -588,6 +602,7 @@ export function pianeta(nomeGrezzo) {
       angoli: [d.tra('cielo.a', 0, 6.283), d.tra('cielo.b', -1.2, 1.2), d.tra('cielo.c', 0, 6.283)],
       tinte: CIELI[Math.floor(d.u('cielo.tinte') * CIELI.length)].split(' ').map(colore),
     },
+    posto: posto(d),
     // quello che la scheda mostra: le parti della superficie sommano a 1
     scheda: { superficie: superficie.map(([id, x]) => ({ id, parte: x })), nubi: roccioso ? copertura : null },
   };
@@ -656,6 +671,9 @@ const PAROLE = {
     no: 'no',
     fasce: 'a fasce',
     ua: 'UA',
+    // i bracci della galassia: nomi di fantasia
+    bracci: ['Braccio della Lira', 'Braccio del Falco', 'Braccio della Fonte', 'Braccio dei Corvi'],
+    posto: (braccio, n) => `${braccio} · ${n} anni luce dal centro`,
   },
   en: {
     tipo: { terrestre: 'terrestrial planet', oceanico: 'ocean world', desertico: 'desert planet', ghiacciato: 'ice world', lavico: 'lava world', gassoso: 'gas giant' },
@@ -691,6 +709,8 @@ const PAROLE = {
     no: 'no',
     fasce: 'banded',
     ua: 'AU',
+    bracci: ['Lyre Arm', 'Falcon Arm', 'Fountain Arm', 'Raven Arm'],
+    posto: (braccio, n) => `${braccio} · ${n} light-years from the core`,
   },
 };
 
@@ -786,6 +806,9 @@ export function descrivi(p, lingua = 'it') {
     criteri,
     vita: quantaVita === 0 ? t.vita[0] : `${t.vita[quantaVita]} (${pct(v)})`,
     civilta: p.civilta && { livello: p.civilta.livello, nome: t.civilta[p.civilta.livello], capitale: p.civilta.capitale, abitanti: persone(p.civilta.abitanti) },
+    // l'indirizzo nella galassia, alle centinaia di anni luce
+    // (separatore delle migliaia sempre, anche in «6.400», che il formato italiano lascerebbe attaccato)
+    posto: t.posto(t.bracci[p.posto.braccio], String(Math.round(p.posto.distanza * 10) * 100).replace(/\B(?=(\d{3})+$)/g, L === 'it' ? '.' : ',')),
     superficie,
     particolari,
   };

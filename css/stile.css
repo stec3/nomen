@@ -100,8 +100,11 @@ html, body {
   text-align: center;
   pointer-events: none; /* sotto le scritte si continua a trascinare il pianeta */
 }
-.scheda.entra > h1, .scheda.entra > #riga, .scheda.entra > #rango, .scheda.entra > #tratti { animation: entra 1.3s ease both; }
+.scheda.entra > h1, .scheda.entra > #riga, .scheda.entra > #posto, .scheda.entra > #rango, .scheda.entra > #tratti { animation: entra 1.3s ease both; }
 .scheda.entra > #riga { animation-delay: 0.12s; }
+.scheda.entra > #posto { animation-delay: 0.2s; }
+/* durante il salto le scritte spariscono; la casella resta */
+.scheda.via > :not(form) { opacity: 0; transition: opacity 0.25s ease; }
 /* il livello si rivela dopo il pianeta */
 .scheda.entra > #rango { animation-delay: 0.6s; }
 .scheda.entra > #tratti { animation-delay: 0.8s; }
@@ -124,6 +127,12 @@ html, body {
   font: 500 clamp(10.5px, 1.5vw, 12.5px)/1.5 var(--bastoni);
   letter-spacing: 0.26em;
   text-transform: uppercase;
+  color: var(--tenue);
+}
+#posto {
+  margin: 4px 0 0;
+  font: 400 clamp(10.5px, 1.4vw, 12px)/1.5 var(--bastoni);
+  letter-spacing: 0.08em;
   color: var(--tenue);
 }
 #rango {
@@ -194,7 +203,7 @@ button.pastiglia { pointer-events: auto; cursor: pointer; }
 /* a foglio aperto le pastiglie stanno già dentro: sopra sarebbero doppie e coprirebbero il pianeta */
 #scheda:has(#particolari[open]) > #tratti { display: none; }
 /* le scritte piccole restano leggibili anche quando passano sopra il pianeta; la pillola ha già il suo fondo */
-#riga, #rango, #particolari > summary { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 14px rgba(0, 0, 0, 0.7); }
+#riga, #posto, #rango, #particolari > summary { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 14px rgba(0, 0, 0, 0.7); }
 #rango > .livello { text-shadow: none; }
 #particolari { pointer-events: auto; width: min(460px, 92vw); margin-top: 8px; }
 #particolari > summary {
