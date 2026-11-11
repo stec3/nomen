@@ -2,6 +2,8 @@
 
 *Nomen omen*: scrivi un nome e ottieni il suo pianeta. [Read in English](README.md).
 
+**Provalo: https://stec3.github.io/nomen/**
+
 Ogni nome diventa un mondo 3D tutto suo, calcolato nel browser: oceani, montagne, nuvole, anelli e lune, e su alcuni mondi una civiltà con città, strade e campi in cui si scende dallo spazio fino alle vie, di giorno e di notte. Lo stesso nome dà sempre lo stesso pianeta. Scrivendo un altro nome si salta lì attraverso la galassia, partendo nella direzione in cui quel mondo si trova davvero nel cielo.
 
 Niente librerie, niente immagini, niente server: uno shader WebGL2 e moduli JavaScript semplici. Il nome sta dopo il `#` nell'indirizzo, una parte che il browser non manda a nessuno.

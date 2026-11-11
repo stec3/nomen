@@ -2,6 +2,8 @@
 
 *Nomen omen*: type a name, get its planet. [Leggi in italiano](README.it.md).
 
+**Try it: https://stec3.github.io/nomen/**
+
 Every name becomes its own 3D world, computed in your browser: oceans, mountains, clouds, rings and moons, and on some worlds a civilization with cities, roads and fields that you can zoom into, from space down to the streets, by day and by night. The same name always gives the same planet. Type another name and you jump there across the galaxy, leaving in the direction where that world really is in the sky.
 
 No libraries, no images, no server: one WebGL2 shader and plain JavaScript modules. The name lives after the `#` in the address, a part the browser never sends anywhere.
